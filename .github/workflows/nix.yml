@@ -1,0 +1,26 @@
+# Nix is the source of truth for reproducibility (Принцип X, quality-gate 4).
+name: nix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # Binary cache for speed; degrades gracefully to build-without-push if the
+      # CACHIX_AUTH_TOKEN secret is absent (contracts/nix-devenv.md C-N-CI2).
+      - uses: cachix/cachix-action@v15
+        continue-on-error: true
+        with:
+          name: xxh
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix flake check --print-build-logs
+      - run: nix build .#xxh --print-build-logs

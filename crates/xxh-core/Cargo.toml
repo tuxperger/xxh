@@ -1,0 +1,28 @@
+[package]
+name = "xxh-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+xxh-transport.workspace = true
+xxh-plugins.workspace = true
+xxh-plugin-api.workspace = true
+xxh-config.workspace = true
+tokio.workspace = true
+blake3.workspace = true
+tar.workspace = true
+zstd.workspace = true
+flate2.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+[features]
+default = []
+nix-source = ["xxh-plugins/nix-source"]
+
+[lints]
+workspace = true

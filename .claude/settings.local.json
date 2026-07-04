@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.specify/scripts/bash/check-prerequisites.sh --json --paths-only)",
+      "Bash(.specify/scripts/bash/setup-plan.sh --json)",
+      "Bash(rustc --version)",
+      "Bash(curl -s --max-time 8 https://crates.io/api/v1/crates/russh)",
+      "WebFetch(domain:lib.rs)",
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "Bash(.specify/scripts/bash/check-prerequisites.sh --json)",
+      "Bash(cat .specify/extensions.yml)",
+      "Bash(cat .specify/templates/checklist-template.md)"
+    ]
+  }
+}

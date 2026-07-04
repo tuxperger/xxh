@@ -1,0 +1,24 @@
+# Rust
+/target/
+**/*.rs.bk
+*.rlib
+*.prof*
+
+# Nix
+result
+result-*
+.direnv/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.log
+
+# Secrets / env
+.env
+.env.*
+
+# Ephemeral test-host key fixtures (generated per run; contracts/integration-testing.md)
+tests/images/testkey/

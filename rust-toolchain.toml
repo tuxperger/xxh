@@ -1,0 +1,9 @@
+# Single source of truth for the Rust toolchain (Принцип X).
+# Read by both rustup and the Nix rust-overlay in flake.nix (research R12/R13).
+[toolchain]
+channel = "1.85.0"
+components = ["clippy", "rustfmt"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]

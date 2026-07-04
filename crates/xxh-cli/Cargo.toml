@@ -1,0 +1,32 @@
+[package]
+name = "xxh-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "xxh"
+path = "src/main.rs"
+
+[dependencies]
+xxh-core.workspace = true
+xxh-config.workspace = true
+xxh-plugins.workspace = true
+xxh-transport.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+nix-source = ["xxh-core/nix-source"]
+
+[dev-dependencies]
+testcontainers = "0.23"
+tar.workspace = true
+flate2.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/xxh-cli",
+    "crates/xxh-core",
+    "crates/xxh-transport",
+    "crates/xxh-plugin-api",
+    "crates/xxh-plugins",
+    "crates/xxh-config",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/you/xxh"
+
+[workspace.dependencies]
+# Async runtime (research R1)
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "signal", "net"] }
+# SSH transport (research R1): russh core + config parsing; keys via russh::keys module
+russh = "0.62"
+russh-config = "0.58"
+# Serialization / config / plugin manifests
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+semver = { version = "1", features = ["serde"] }
+# Content-addressed cache hashing (research R4)
+blake3 = "1"
+# CLI + observability
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Errors (distinct classes: transport/shell/plugin/config)
+anyhow = "1"
+thiserror = "2"
+# Packaging for delivery
+tar = "0.4"
+zstd = "0.13"
+flate2 = "1"
+# Client config/cache paths
+directories = "5"
+async-trait = "0.1"
+
+# Internal crates
+xxh-core = { path = "crates/xxh-core" }
+xxh-transport = { path = "crates/xxh-transport" }
+xxh-plugin-api = { path = "crates/xxh-plugin-api" }
+xxh-plugins = { path = "crates/xxh-plugins" }
+xxh-config = { path = "crates/xxh-config" }
+
+[workspace.lints.clippy]
+# T004: deny warnings gate (Принцип VIII / quality gates)
+all = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+# `deny` (not `forbid`) so production code stays unsafe-free while tests can make a
+# single explicit, justified exception (e.g. std::env::set_var, unsafe in edition 2024).
+unsafe_code = "deny"
