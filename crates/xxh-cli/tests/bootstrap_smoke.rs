@@ -43,18 +43,49 @@ struct Host {
     known_hosts: PathBuf,
 }
 
+/// Serialises fixture boot: tests in this binary run in parallel but share the
+/// docker image tag and the `tests/images/testkey` build context.
+static BOOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl Host {
     fn boot() -> Host {
+        let _boot = BOOT_LOCK.lock().unwrap();
         let tag = "xxh-test-alpine:latest";
-        let name = format!("xxh-it-{}", std::process::id());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("xxh-it-{}-{nanos:x}", std::process::id());
         let workdir = std::env::temp_dir().join(&name);
         std::fs::create_dir_all(&workdir).unwrap();
 
         // Generate client key + deterministic host key (C-IT3).
         let key_path = workdir.join("client");
-        run_ok("ssh-keygen", &["-t", "ed25519", "-N", "", "-q", "-f", key_path.to_str().unwrap()]);
+        run_ok(
+            "ssh-keygen",
+            &[
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-q",
+                "-f",
+                key_path.to_str().unwrap(),
+            ],
+        );
         let hostkey = workdir.join("ssh_host_ed25519_key");
-        run_ok("ssh-keygen", &["-t", "ed25519", "-N", "", "-q", "-f", hostkey.to_str().unwrap()]);
+        run_ok(
+            "ssh-keygen",
+            &[
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-q",
+                "-f",
+                hostkey.to_str().unwrap(),
+            ],
+        );
 
         // Build the minimal image with the generated testkey context.
         let img_ctx = repo_root().join("tests").join("images");
@@ -83,9 +114,21 @@ impl Host {
         // Run detached with a random host port.
         let out = run_ok(
             "docker",
-            &["run", "-d", "--rm", "--name", &name, "-p", "127.0.0.1::22", tag],
+            &[
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                &name,
+                "-p",
+                "127.0.0.1::22",
+                tag,
+            ],
         );
-        assert!(!out.trim().is_empty(), "docker run returned no container id");
+        assert!(
+            !out.trim().is_empty(),
+            "docker run returned no container id"
+        );
 
         // Discover the mapped port.
         let port_out = run_ok("docker", &["port", &name, "22/tcp"]);
@@ -99,10 +142,20 @@ impl Host {
         // Known-hosts pinned to our fixed host key for stable verification (C-IT3).
         let known_hosts = workdir.join("known_hosts");
         let hostpub = std::fs::read_to_string(workdir.join("ssh_host_ed25519_key.pub")).unwrap();
-        let hostpub = hostpub.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+        let hostpub = hostpub
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
         std::fs::write(&known_hosts, format!("[127.0.0.1]:{port} {hostpub}\n")).unwrap();
 
-        let host = Host { name, port, workdir, key_path, known_hosts };
+        let host = Host {
+            name,
+            port,
+            workdir,
+            key_path,
+            known_hosts,
+        };
         host.wait_ready();
         host
     }
@@ -183,7 +236,9 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.name]).output();
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &self.name])
+            .output();
         let _ = std::fs::remove_dir_all(&self.workdir);
         let _ = std::fs::remove_dir_all(repo_root().join("tests/images/testkey"));
     }
@@ -234,7 +289,11 @@ fn bootstrap_deploys_then_leaves_host_clean_on_alpine() {
 
     // 4) Cleanliness assert (Принцип VIII / §SC-002): host is left clean.
     let leftover = host.ssh("test -e ~/.xxh && echo DIRTY || echo CLEAN");
-    assert_eq!(leftover.trim(), "CLEAN", "~/.xxh must be gone after ephemeral exit");
+    assert_eq!(
+        leftover.trim(),
+        "CLEAN",
+        "~/.xxh must be gone after ephemeral exit"
+    );
 }
 
 #[test]
@@ -261,7 +320,8 @@ fn crashed_session_is_cleaned_on_next_connect_on_alpine() {
     // Next connect runs reconcile → stale marker (dead pid) swept → host clean.
     host.ssh("sh ~/xxh-bootstrap.sh reconcile");
     assert_eq!(
-        host.ssh("test -e ~/.xxh && echo DIRTY || echo CLEAN").trim(),
+        host.ssh("test -e ~/.xxh && echo DIRTY || echo CLEAN")
+            .trim(),
         "CLEAN",
         "reconcile must remove crashed-session leftovers"
     );

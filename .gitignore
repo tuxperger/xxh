@@ -21,4 +21,7 @@ result-*
 .env.*
 
 # Ephemeral test-host key fixtures (generated per run; contracts/integration-testing.md)
-tests/images/testkey/
+tests/images/testkey*/
+
+# Shell package payloads are fetched, not committed (packages/shells/*/fetch.sh)
+packages/shells/*/dist/

@@ -6,6 +6,7 @@
 pub mod deploy;
 pub mod platform;
 pub mod session;
+pub mod shellpkg;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,7 +17,11 @@ pub enum ShellError {
     #[error("unsupported host platform: {0}")]
     Unsupported(String),
     /// Requested shell is not available in the environment/cache (§FR-011).
-    #[error("shell `{0}` is not available; add it as a plugin first")]
+    #[error(
+        "shell `{0}` is neither packaged locally nor present on the host; \
+         install a shell package (see packages/shells/) into ~/.local/share/xxh/shells, \
+         add a plugin providing it, or pick another shell with --shell"
+    )]
     NotAvailable(String),
     /// Generic delivery/assembly failure.
     #[error("shell error: {0}")]

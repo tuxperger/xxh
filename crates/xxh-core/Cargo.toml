@@ -19,6 +19,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+directories.workspace = true
 
 [features]
 default = []
@@ -26,3 +27,6 @@ nix-source = ["xxh-plugins/nix-source"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

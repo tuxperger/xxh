@@ -1,0 +1,74 @@
+# Integration matrix against real sshd containers (Принцип VIII, T061,
+# contracts/integration-testing.md C-IT10..13): {debian, ubuntu, alpine} ×
+# {x86_64, aarch64 (qemu/binfmt)}. Every scenario carries the mandatory host
+# cleanliness assert; teardown is guaranteed by the fixtures' RAII Drop plus a
+# final cleanup step even when a test fails.
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sshd-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian, ubuntu, alpine]
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      XXH_TEST_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Version comes from rust-toolchain.toml (single source of truth).
+          toolchain: "1.85.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      # aarch64 host containers run via qemu/binfmt emulation (C-IT10).
+      - name: Enable qemu/binfmt for aarch64
+        if: matrix.arch == 'aarch64'
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64
+          echo "DOCKER_DEFAULT_PLATFORM=linux/arm64" >> "$GITHUB_ENV"
+
+      # Base image layers are cached between runs (C-IT11).
+      - name: Cache docker base images
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-image-cache
+          key: docker-${{ matrix.image }}-${{ matrix.arch }}-${{ hashFiles('tests/images/*.Dockerfile') }}
+      - name: Load cached base image
+        run: |
+          if [ -f "/tmp/docker-image-cache/base.tar" ]; then
+            docker load -i /tmp/docker-image-cache/base.tar || true
+          fi
+
+      # Per-scenario timeouts come from the job timeout + cargo test's own
+      # granularity; each test binary is one scenario (C-IT12).
+      - name: Run integration scenarios
+        run: >
+          cargo test -p xxh-cli
+          --test bootstrap_smoke --test connect_smoke --test cache_reuse
+          --test plugin_git_local --test error_classes
+          -- --test-threads=1
+
+      - name: Save base image to cache
+        if: always()
+        run: |
+          mkdir -p /tmp/docker-image-cache
+          base=$(grep -m1 '^FROM' "tests/images/${XXH_TEST_IMAGE}.Dockerfile" | awk '{print $2}')
+          docker save -o /tmp/docker-image-cache/base.tar "$base" || true
+
+      # Guaranteed teardown even when a test panicked mid-fixture (C-IT13).
+      - name: Teardown leaked containers
+        if: always()
+        run: |
+          docker ps -aq --filter "name=xxh-" | xargs -r docker rm -f
+          docker images -q "xxh-test-*" | xargs -r docker rmi -f || true

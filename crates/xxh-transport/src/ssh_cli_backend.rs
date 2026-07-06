@@ -88,12 +88,9 @@ impl Transport for SshCliTransport {
         let mut c = self.cmd();
         c.arg(&self.alias).arg("--").arg("true");
         let fut = c.status();
-        let status = tokio::time::timeout(
-            Duration::from_secs(target.connect_timeout_s + 2),
-            fut,
-        )
-        .await
-        .map_err(|_| TransportError::Timeout(target.connect_timeout_s))??;
+        let status = tokio::time::timeout(Duration::from_secs(target.connect_timeout_s + 2), fut)
+            .await
+            .map_err(|_| TransportError::Timeout(target.connect_timeout_s))??;
 
         if !status.success() {
             return Err(TransportError::Connect(format!(

@@ -35,14 +35,57 @@
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
+        # Keep non-cargo files the build embeds (bootstrap.sh via include_str!).
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type:
+            (craneLib.filterCargoSources path type)
+            || (builtins.match ".*bootstrap\\.sh$" path != null)
+            || (builtins.match ".*config-schema\\.json$" path != null);
+        };
+
         commonArgs = {
-          src = craneLib.cleanCargoSource ./.;
+          inherit src;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.pkg-config ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         xxh = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+
+        # Static/cross client builds (T060, Принципы I/II): one pkgsCross/pkgsStatic
+        # infrastructure serves both the client and the ⭐ Nix plugin provider.
+        staticFor =
+          crossPkgs:
+          let
+            sp = crossPkgs.pkgsStatic;
+            target = sp.stdenv.hostPlatform.rust.rustcTarget;
+            staticToolchain = rustToolchain.override { targets = [ target ]; };
+            staticCraneLib = (crane.mkLib pkgs).overrideToolchain staticToolchain;
+            upperTarget = builtins.replaceStrings [ "-" ] [ "_" ] (pkgs.lib.toUpper target);
+          in
+          staticCraneLib.buildPackage {
+            inherit src;
+            strictDeps = true;
+            CARGO_BUILD_TARGET = target;
+            "CARGO_TARGET_${upperTarget}_LINKER" = "${sp.stdenv.cc.targetPrefix}cc";
+            # C build scripts (aws-lc-sys, zstd-sys, blake3) must use the musl
+            # cross cc for target code, never the glibc host cc.
+            "CC_${builtins.replaceStrings [ "-" ] [ "_" ] target}" = "${sp.stdenv.cc.targetPrefix}cc";
+            "AR_${builtins.replaceStrings [ "-" ] [ "_" ] target}" = "${sp.stdenv.cc.targetPrefix}ar";
+            TARGET_CC = "${sp.stdenv.cc.targetPrefix}cc";
+            TARGET_AR = "${sp.stdenv.cc.targetPrefix}ar";
+            HOST_CC = "cc";
+            nativeBuildInputs = [
+              sp.stdenv.cc # cross cc (prefixed binaries)
+              pkgs.stdenv.cc # host cc for build scripts themselves
+              pkgs.cmake # aws-lc-sys
+            ];
+            # musl lacks glibc's *_chk fortify symbols.
+            hardeningDisable = [ "fortify" ];
+            doCheck = false; # cross tests do not run on the build host
+          };
       in
       {
         devShells.default = craneLib.devShell {
@@ -59,7 +102,9 @@
         packages = {
           default = xxh;
           xxh = xxh;
-          # Static/cross variants (pkgsStatic / pkgsCross) land in T060.
+          xxh-static-x86_64 = staticFor pkgs;
+          xxh-static-aarch64 = staticFor pkgs.pkgsCross.aarch64-multiplatform;
+          xxh-static-armv7 = staticFor pkgs.pkgsCross.armv7l-hf-multiplatform;
         };
 
         checks = {
@@ -73,8 +118,23 @@
           );
           fmt = craneLib.cargoFmt { src = commonArgs.src; };
           test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
-          # ⭐ declarative-module eval + round-trip land in T058/T059.
+          # ⭐ Declarative-module checks (T058/T059): options eval-validate and the
+          # MANDATORY round-trip module → config.toml → xxh-config parser (§SC-013/015).
+          nix-module-eval = import ./tests/nix-modules/eval_options.nix {
+            inherit pkgs;
+            inherit (pkgs) lib;
+          };
+          nix-module-roundtrip = import ./tests/nix-modules/roundtrip.nix {
+            inherit pkgs xxh;
+            inherit (pkgs) lib;
+          };
         };
       }
-    );
+    )
+    // {
+      # ⭐ Declarative modules (T056/T057, Принцип XI): generators of the canonical
+      # config file; no runtime Nix dependency (§FR-042).
+      homeManagerModules.default = import ./nix/modules/home-manager.nix { };
+      nixosModules.default = import ./nix/modules/nixos.nix { };
+    };
 }

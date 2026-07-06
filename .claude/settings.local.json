@@ -10,7 +10,8 @@
       "WebFetch(domain:docs.rs)",
       "Bash(.specify/scripts/bash/check-prerequisites.sh --json)",
       "Bash(cat .specify/extensions.yml)",
-      "Bash(cat .specify/templates/checklist-template.md)"
+      "Bash(cat .specify/templates/checklist-template.md)",
+      "Bash(.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks)"
     ]
   }
 }

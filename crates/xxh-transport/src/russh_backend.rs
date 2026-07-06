@@ -96,13 +96,11 @@ impl Transport for RusshTransport {
 
         // Bound the connect with the configured timeout (§FR-031).
         let connect_fut = client::connect(config, (host.as_str(), port), handler);
-        let mut handle = tokio::time::timeout(
-            Duration::from_secs(target.connect_timeout_s),
-            connect_fut,
-        )
-        .await
-        .map_err(|_| TransportError::Timeout(target.connect_timeout_s))?
-        .map_err(|e| classify_connect(&e))?;
+        let mut handle =
+            tokio::time::timeout(Duration::from_secs(target.connect_timeout_s), connect_fut)
+                .await
+                .map_err(|_| TransportError::Timeout(target.connect_timeout_s))?
+                .map_err(|e| classify_connect(&e))?;
 
         // Auth: public keys from identity files, then interactive fallback.
         let mut authed = false;
@@ -112,9 +110,7 @@ impl Transport for RusshTransport {
                     continue;
                 };
                 let kwh = PrivateKeyWithHashAlg::new(Arc::new(key), None);
-                if let Ok(AuthResult::Success) =
-                    handle.authenticate_publickey(&user, kwh).await
-                {
+                if let Ok(AuthResult::Success) = handle.authenticate_publickey(&user, kwh).await {
                     authed = true;
                     break;
                 }
@@ -219,9 +215,7 @@ impl Transport for RusshTransport {
 
     async fn disconnect(&mut self) -> Result<(), TransportError> {
         if let Some(handle) = self.handle.take() {
-            let _ = handle
-                .disconnect(Disconnect::ByApplication, "", "")
-                .await;
+            let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
         }
         Ok(())
     }

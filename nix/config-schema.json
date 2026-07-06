@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "The canonical user configuration file (`~/.config/xxh/config.toml`).",
+  "type": "object",
+  "properties": {
+    "cleanup": {
+      "$ref": "#/$defs/CleanupMode",
+      "default": "ephemeral"
+    },
+    "connect_timeout_s": {
+      "type": "integer",
+      "format": "uint64",
+      "default": 10,
+      "minimum": 0
+    },
+    "default_shell": {
+      "type": "string",
+      "default": "zsh"
+    },
+    "enabled_plugins": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/HostOverride"
+      },
+      "default": {}
+    },
+    "transport": {
+      "$ref": "#/$defs/TransportBackend",
+      "default": "russh"
+    }
+  },
+  "$defs": {
+    "CleanupMode": {
+      "description": "Cleanup behaviour on session exit (§FR-005/012, Принцип I).",
+      "oneOf": [
+        {
+          "description": "Default: remove everything on exit — the host is left as before.",
+          "type": "string",
+          "const": "ephemeral"
+        },
+        {
+          "description": "Keep the content-addressed cache between sessions (requires the `--keep` flag).",
+          "type": "string",
+          "const": "keep"
+        }
+      ]
+    },
+    "HostOverride": {
+      "description": "Per-host overrides applied on top of the global config (§FR-023).\n\nEvery field is optional; `None` means \"inherit the global value\". List-valued\nfields (`enabled_plugins`) **replace** the global list rather than merging\n(resolves analysis finding C4 — simple, predictable precedence).",
+      "type": "object",
+      "properties": {
+        "cleanup": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CleanupMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connect_timeout_s": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "default_shell": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled_plugins": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransportBackend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "TransportBackend": {
+      "description": "Which transport backend to use (Принцип III).",
+      "oneOf": [
+        {
+          "description": "Pure-Rust russh backend (default).",
+          "type": "string",
+          "const": "russh"
+        },
+        {
+          "description": "Wrapper over the system `ssh` binary (fallback/compat).",
+          "type": "string",
+          "const": "ssh"
+        }
+      ]
+    }
+  }
+}

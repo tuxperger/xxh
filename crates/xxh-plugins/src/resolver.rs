@@ -13,8 +13,7 @@ use xxh_plugin_api::{Manifest, PluginError};
 /// Errors (all class "plugin"): [`PluginError::MissingDependency`],
 /// [`PluginError::VersionConflict`], [`PluginError::DependencyCycle`].
 pub fn resolve(enabled: &[Manifest]) -> Result<Vec<String>, PluginError> {
-    let by_name: BTreeMap<&str, &Manifest> =
-        enabled.iter().map(|m| (m.name.as_str(), m)).collect();
+    let by_name: BTreeMap<&str, &Manifest> = enabled.iter().map(|m| (m.name.as_str(), m)).collect();
 
     // 1) Validate dependencies exist and versions satisfy the requirements (§FR-021).
     for m in enabled {
@@ -45,7 +44,10 @@ pub fn resolve(enabled: &[Manifest]) -> Result<Vec<String>, PluginError> {
         for dep in m.dependencies.keys() {
             if by_name.contains_key(dep.as_str()) {
                 *indegree.get_mut(m.name.as_str()).unwrap() += 1;
-                dependents.entry(dep.as_str()).or_default().push(m.name.as_str());
+                dependents
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(m.name.as_str());
             }
         }
     }
@@ -95,9 +97,8 @@ mod tests {
     use super::*;
 
     fn m(name: &str, ver: &str, prio: i32, deps: &[(&str, &str)]) -> Manifest {
-        let mut toml = format!(
-            "name=\"{name}\"\nversion=\"{ver}\"\napi_version=\"1.0.0\"\npriority={prio}\n"
-        );
+        let mut toml =
+            format!("name=\"{name}\"\nversion=\"{ver}\"\napi_version=\"1.0.0\"\npriority={prio}\n");
         if !deps.is_empty() {
             toml.push_str("[dependencies]\n");
             for (d, r) in deps {

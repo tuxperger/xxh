@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use xxh_config::Effective;
-use xxh_core::session::{Session, minimal_env_component};
+use xxh_core::session::{Session, minimal_env_component, silent_progress};
 use xxh_transport::{ResolvedSshTarget, RusshTransport};
 
 fn docker_available() -> bool {
@@ -59,20 +59,60 @@ impl Fixture {
 
         // Client key + deterministic host key.
         let key = ssh.join("id_ed25519");
-        run_ok("ssh-keygen", &["-t", "ed25519", "-N", "", "-q", "-f", key.to_str().unwrap()]);
+        run_ok(
+            "ssh-keygen",
+            &["-t", "ed25519", "-N", "", "-q", "-f", key.to_str().unwrap()],
+        );
         let hostkey = home.join("hostkey");
-        run_ok("ssh-keygen", &["-t", "ed25519", "-N", "", "-q", "-f", hostkey.to_str().unwrap()]);
+        run_ok(
+            "ssh-keygen",
+            &[
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-q",
+                "-f",
+                hostkey.to_str().unwrap(),
+            ],
+        );
 
         // Build the image with the generated testkey context.
         let img = repo_root().join("tests/images");
         let keydir = img.join("testkey");
         std::fs::create_dir_all(&keydir).unwrap();
         std::fs::copy(&hostkey, keydir.join("ssh_host_ed25519_key")).unwrap();
-        std::fs::copy(hostkey.with_extension("pub"), keydir.join("ssh_host_ed25519_key.pub")).unwrap();
+        std::fs::copy(
+            hostkey.with_extension("pub"),
+            keydir.join("ssh_host_ed25519_key.pub"),
+        )
+        .unwrap();
         std::fs::copy(key.with_extension("pub"), keydir.join("authorized_keys")).unwrap();
-        run_ok("docker", &["build", "-t", tag, "-f", img.join("alpine.Dockerfile").to_str().unwrap(), img.to_str().unwrap()]);
+        run_ok(
+            "docker",
+            &[
+                "build",
+                "-t",
+                tag,
+                "-f",
+                img.join("alpine.Dockerfile").to_str().unwrap(),
+                img.to_str().unwrap(),
+            ],
+        );
 
-        run_ok("docker", &["run", "-d", "--rm", "--name", &name, "-p", "127.0.0.1::22", tag]);
+        run_ok(
+            "docker",
+            &[
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                &name,
+                "-p",
+                "127.0.0.1::22",
+                tag,
+            ],
+        );
         let port = run_ok("docker", &["port", &name, "22/tcp"])
             .lines()
             .next()
@@ -84,7 +124,11 @@ impl Fixture {
         // The client identity is the default ~/.ssh/id_ed25519 that RusshTransport
         // falls back to; both are read from the fixture HOME at connect time.
         let hostpub = std::fs::read_to_string(home.join("hostkey.pub")).unwrap();
-        let hostpub = hostpub.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+        let hostpub = hostpub
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
         std::fs::write(ssh.join("known_hosts"), format!("127.0.0.1 {hostpub}\n")).unwrap();
 
         let fx = Fixture { name, home, port };
@@ -96,13 +140,21 @@ impl Fixture {
         for _ in 0..40 {
             let ok = Command::new("ssh")
                 .args([
-                    "-i", self.home.join(".ssh/id_ed25519").to_str().unwrap(),
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=3",
-                    "-p", &port.to_string(),
-                    "tester@127.0.0.1", "--", "true",
+                    "-i",
+                    self.home.join(".ssh/id_ed25519").to_str().unwrap(),
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=3",
+                    "-p",
+                    &port.to_string(),
+                    "tester@127.0.0.1",
+                    "--",
+                    "true",
                 ])
                 .output()
                 .map(|o| o.status.success())
@@ -118,7 +170,9 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.name]).output();
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &self.name])
+            .output();
         let _ = std::fs::remove_dir_all(&self.home);
         let _ = std::fs::remove_dir_all(repo_root().join("tests/images/testkey"));
     }
@@ -154,9 +208,16 @@ fn full_session_over_russh_leaves_host_clean() {
         target.port = Some(fx.port);
         target.user = Some("tester".into());
 
-        let mut session = Session::establish(RusshTransport::new(), &target, &eff, &env)
-            .await
-            .expect("establish session");
+        let mut session = Session::establish(
+            RusshTransport::new(),
+            &target,
+            &eff,
+            &env,
+            &[],
+            silent_progress(),
+        )
+        .await
+        .expect("establish session");
 
         // Run a command inside the delivered environment: the env.sh sets XXH_SESSION=1.
         let code = session
@@ -169,7 +230,10 @@ fn full_session_over_russh_leaves_host_clean() {
         // Cleanliness assert (Принцип VIII): reconnect and check ~/.xxh is gone.
         let mut probe = RusshTransport::new();
         use xxh_transport::{AuthPolicy, Transport};
-        probe.connect(&target, &AuthPolicy::default()).await.unwrap();
+        probe
+            .connect(&target, &AuthPolicy::default())
+            .await
+            .unwrap();
         let out = probe
             .exec("test -e $HOME/.xxh && echo DIRTY || echo CLEAN")
             .await
@@ -179,5 +243,8 @@ fn full_session_over_russh_leaves_host_clean() {
     });
 
     assert_eq!(marker, 0);
-    assert_eq!(clean, "CLEAN", "~/.xxh must be gone after ephemeral session");
+    assert_eq!(
+        clean, "CLEAN",
+        "~/.xxh must be gone after ephemeral session"
+    );
 }

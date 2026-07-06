@@ -107,11 +107,17 @@ impl Manifest {
     /// `targets` list means "any platform" (C-M5). Patterns are `os[/arch[/libc]]`
     /// where `*` matches any segment.
     pub fn supports(&self, os: &str, arch: &str, libc: &str) -> bool {
-        if self.targets.is_empty() {
-            return true;
-        }
-        self.targets.iter().any(|t| target_matches(t, os, arch, libc))
+        targets_allow(&self.targets, os, arch, libc)
     }
+}
+
+/// Standalone target matching (C-M5) for callers that carry a target list without a
+/// full manifest (e.g. component filtering in the session). Empty list = any platform.
+pub fn targets_allow(targets: &[String], os: &str, arch: &str, libc: &str) -> bool {
+    if targets.is_empty() {
+        return true;
+    }
+    targets.iter().any(|t| target_matches(t, os, arch, libc))
 }
 
 fn target_matches(pattern: &str, os: &str, arch: &str, libc: &str) -> bool {
@@ -174,19 +180,18 @@ mod tests {
 
     #[test]
     fn api_major_mismatch_is_rejected() {
-        let m = Manifest::parse(
-            "name = \"x\"\nversion = \"0.1.0\"\napi_version = \"2.0.0\"\n",
-        )
-        .unwrap();
-        assert!(matches!(m.check_api(), Err(PluginError::ApiMismatch { .. })));
+        let m = Manifest::parse("name = \"x\"\nversion = \"0.1.0\"\napi_version = \"2.0.0\"\n")
+            .unwrap();
+        assert!(matches!(
+            m.check_api(),
+            Err(PluginError::ApiMismatch { .. })
+        ));
     }
 
     #[test]
     fn empty_targets_means_any_platform() {
-        let m = Manifest::parse(
-            "name = \"x\"\nversion = \"0.1.0\"\napi_version = \"1.0.0\"\n",
-        )
-        .unwrap();
+        let m = Manifest::parse("name = \"x\"\nversion = \"0.1.0\"\napi_version = \"1.0.0\"\n")
+            .unwrap();
         assert!(m.supports("linux", "x86_64", "musl"));
         assert!(m.supports("darwin", "aarch64", "unknown"));
     }

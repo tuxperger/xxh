@@ -64,9 +64,9 @@ impl Platform {
         let os_raw = it
             .next()
             .ok_or_else(|| ShellError::Unsupported(format!("empty detect output: {line:?}")))?;
-        let arch_raw = it
-            .next()
-            .ok_or_else(|| ShellError::Unsupported(format!("no arch in detect output: {line:?}")))?;
+        let arch_raw = it.next().ok_or_else(|| {
+            ShellError::Unsupported(format!("no arch in detect output: {line:?}"))
+        })?;
 
         let os = match os_raw {
             "Linux" => Os::Linux,
@@ -114,6 +114,43 @@ impl Platform {
     /// available, otherwise gzip (part of the minimal host contract).
     pub fn preferred_archive_fmt(&self) -> &'static str {
         if self.caps.has_zstd { "zst" } else { "gz" }
+    }
+
+    /// Canonical `<os>-<arch>` key used to select package payloads
+    /// (`dist/<key>/` in shell packages, target tables in providers).
+    pub fn target_key(&self) -> String {
+        format!("{}-{}", self.os_str(), self.arch_str())
+    }
+
+    /// Lower-case OS name matching manifest target patterns (C-M5).
+    pub fn os_str(&self) -> &'static str {
+        match self.os {
+            Os::Linux => "linux",
+            Os::Darwin => "darwin",
+            Os::FreeBsd => "freebsd",
+            Os::OpenBsd => "openbsd",
+            Os::NetBsd => "netbsd",
+            Os::Other => "other",
+        }
+    }
+
+    /// Canonical architecture name matching manifest target patterns.
+    pub fn arch_str(&self) -> &'static str {
+        match self.arch {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+            Arch::Arm => "armv7l",
+            Arch::Other => "other",
+        }
+    }
+
+    /// Libc name for manifest target patterns (best-effort, U1).
+    pub fn libc_str(&self) -> &'static str {
+        match self.libc {
+            Libc::Glibc => "glibc",
+            Libc::Musl => "musl",
+            Libc::Unknown => "unknown",
+        }
     }
 }
 

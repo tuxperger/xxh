@@ -4,6 +4,8 @@
 //! modules merely *generate* this file (T054–T059); they are not an alternative
 //! runtime source. See data-model.md and contracts/nix-config-module.md.
 
+pub mod schema;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -25,7 +27,7 @@ pub enum ConfigError {
 }
 
 /// Cleanup behaviour on session exit (§FR-005/012, Принцип I).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CleanupMode {
     /// Default: remove everything on exit — the host is left as before.
@@ -41,7 +43,7 @@ impl Default for CleanupMode {
 }
 
 /// Which transport backend to use (Принцип III).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportBackend {
     /// Pure-Rust russh backend (default).
@@ -69,7 +71,7 @@ fn default_timeout() -> u64 {
 /// Every field is optional; `None` means "inherit the global value". List-valued
 /// fields (`enabled_plugins`) **replace** the global list rather than merging
 /// (resolves analysis finding C4 — simple, predictable precedence).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_shell: Option<String>,
@@ -84,7 +86,7 @@ pub struct HostOverride {
 }
 
 /// The canonical user configuration file (`~/.config/xxh/config.toml`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Config {
     #[serde(default = "default_shell")]
     pub default_shell: String,
@@ -138,6 +140,26 @@ impl Config {
         directories::BaseDirs::new().map(|d| d.config_dir().join("xxh").join("config.toml"))
     }
 
+    /// System-wide config location, written by the NixOS module (§FR-044).
+    pub fn system_path() -> PathBuf {
+        PathBuf::from("/etc/xxh/config.toml")
+    }
+
+    /// Load the effective config file: the per-user file wins; a NixOS-managed
+    /// system-wide file is the fallback; with neither, built-in defaults apply.
+    pub fn load_default() -> Result<Self, ConfigError> {
+        if let Some(user) = Self::default_path() {
+            if user.is_file() {
+                return Self::load(&user);
+            }
+        }
+        let system = Self::system_path();
+        if system.is_file() {
+            return Self::load(&system);
+        }
+        Ok(Self::default())
+    }
+
     /// Load from `path`. A missing file yields the default config (§FR-022 —
     /// the tool works with no config). Invalid TOML is a `ConfigError::Parse`
     /// (exit 40), never a runtime panic.
@@ -153,6 +175,22 @@ impl Config {
                 source,
             }),
         }
+    }
+
+    /// Persist the config back to `path` (used by `xxh plugin enable/disable`,
+    /// §FR-015: enabled-state lives in the canonical config, Принцип XI).
+    pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+        let text = toml::to_string_pretty(self).expect("Config always serializes");
+        std::fs::write(path, text).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
     }
 
     /// Resolve effective settings for `alias`, applying precedence:
@@ -249,7 +287,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            cfg.resolve("other", &CliOverrides::default()).enabled_plugins,
+            cfg.resolve("other", &CliOverrides::default())
+                .enabled_plugins,
             vec!["a", "b"]
         );
         assert_eq!(

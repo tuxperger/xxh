@@ -1,15 +1,15 @@
 //! xxh-plugins — plugin registry, resolver, isolation, and package sources.
 //!
-//! Skeleton for Phase 1. `trait PackageSource` (T032) and the git/local/⭐nix
-//! providers (T033/T034/T050) land in US4/US7. See contracts/plugin-source-trait.md.
+//! `trait PackageSource` (T032) hides how a package is obtained: git, a local
+//! path, or (⭐ behind the `nix-source` feature) nixpkgs — Принцип IX. The
+//! registry (T035) stores packages content-addressed; the resolver (T036)
+//! orders them deterministically; isolation (T037) runs lifecycle hooks in a
+//! separate process so a broken plugin cannot take the session down.
 
 pub use xxh_plugin_api::{Manifest, PluginError};
 
+pub mod isolation;
+pub mod registry;
 pub mod resolver;
-
-// ⭐ Optional Nix provider is compiled only behind the `nix-source` feature so its
-// absence cannot affect the rest of the tool (Принцип IX).
-#[cfg(feature = "nix-source")]
-pub mod sources {
-    //! Provider implementations land here (T033/T034/T050).
-}
+pub mod source;
+pub mod sources;
