@@ -12,6 +12,7 @@ russh-config.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

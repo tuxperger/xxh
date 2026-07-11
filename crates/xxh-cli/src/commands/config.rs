@@ -41,8 +41,20 @@ pub fn run(action: &ConfigAction, cli: &CliOverrides) -> Result<(), ConfigError>
             println!("host              = {alias}");
             println!("shell             = {}", eff.shell);
             println!("transport         = {:?}", eff.transport);
+            println!("container_runtime = {:?}", eff.container_runtime);
             println!("cleanup           = {:?}", eff.cleanup);
             println!("connect_timeout_s = {}", eff.connect_timeout_s);
+            println!(
+                "user              = {}",
+                eff.user.as_deref().unwrap_or("<ssh-config>")
+            );
+            println!(
+                "identity          = {}",
+                eff.identity
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<ssh-config>".into())
+            );
             println!("enabled_plugins   = {:?}", eff.enabled_plugins);
             Ok(())
         }

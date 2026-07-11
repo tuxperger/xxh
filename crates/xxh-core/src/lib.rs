@@ -19,7 +19,7 @@ pub enum ShellError {
     /// Requested shell is not available in the environment/cache (§FR-011).
     #[error(
         "shell `{0}` is neither packaged locally nor present on the host; \
-         install a shell package (see packages/shells/) into ~/.local/share/xxh/shells, \
+         install a shell package (e.g. xxh-shell-zsh) into ~/.local/share/xxh/shells, \
          add a plugin providing it, or pick another shell with --shell"
     )]
     NotAvailable(String),

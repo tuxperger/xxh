@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use xxh_config::{CleanupMode, Effective};
 use xxh_plugin_api::{LifecycleStage, Manifest};
 use xxh_plugins::PluginError;
-use xxh_transport::{AuthPolicy, ResolvedSshTarget, Transport};
+use xxh_transport::{AuthPolicy, ResolvedTarget, Transport};
 
 use crate::ShellError;
 use crate::deploy::{Component, ComponentKind};
@@ -23,9 +23,6 @@ use crate::shellpkg;
 
 /// The embedded reference bootstrap script (Принцип I; contracts/bootstrap-protocol.md).
 const BOOTSTRAP_SH: &str = include_str!("../../../bootstrap/bootstrap.sh");
-
-/// Remote path for the bootstrap script, inside the ephemeral root so cleanup removes it.
-const REMOTE_BOOT: &str = "$HOME/.xxh/boot.sh";
 
 /// Errors distinguishable by class for the CLI (§FR-026).
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +93,9 @@ pub struct Session<T: Transport> {
     transport: T,
     platform: Platform,
     keep: bool,
+    /// The resolved writable environment root on the target (FR-011/C-C12): the
+    /// bootstrap script and the content cache live here, and cleanup removes it.
+    remote_root: String,
     session_id: String,
     /// Shell-launch command resolved during establish (§FR-008..011).
     shell_cmd: String,
@@ -114,14 +114,14 @@ impl<T: Transport> Session<T> {
     /// reconcile stale artefacts, and deliver the environment.
     pub async fn establish(
         mut transport: T,
-        target: &ResolvedSshTarget,
+        target: &ResolvedTarget,
         eff: &Effective,
         env_components: &[Component],
         plugins: &[SessionPlugin],
         progress: Progress<'_>,
     ) -> Result<Self, SessionError> {
         run_stage_hooks(plugins, LifecycleStage::PreConnect, progress).await;
-        progress(&format!("connect {}", target.alias));
+        progress(&format!("connect {}", target.label()));
         transport.connect(target, &AuthPolicy::default()).await?;
 
         // 1) Detect platform by streaming the script over stdin — creates nothing on
@@ -188,20 +188,36 @@ impl<T: Transport> Session<T> {
             progress(&format!("plugins: {} active", active.len()));
         }
 
-        // 3) Install the bootstrap script into the ephemeral root and sweep any stale
-        //    artefacts from a previously crashed session (§FR-006).
+        // 3) Resolve the single writable root on the target ($HOME → $TMPDIR →
+        //    /tmp; C-C12/FR-011). Streamed like detect, so no writable location
+        //    anywhere fails here with NO partial deployment. Every later bootstrap
+        //    call carries this exact root so the client and script never diverge.
+        let root_out = transport
+            .upload_stream("sh -s -- root", BOOTSTRAP_SH.as_bytes().to_vec())
+            .await?;
+        if root_out.exit_code != 0 {
+            return Err(ShellError::Other(format!(
+                "no writable directory on the target for the xxh environment: {}",
+                String::from_utf8_lossy(&root_out.stderr).trim()
+            ))
+            .into());
+        }
+        let remote_root = root_out.stdout_str();
+        let remote_boot = format!("{remote_root}/boot.sh");
+        let boot = |args: &str| format!("XXH_ROOT={remote_root} sh {remote_boot} {args}");
+
+        // Install the bootstrap script into the resolved root and sweep any stale
+        // artefacts from a previously crashed session (§FR-006).
         transport
             .upload_stream(
-                &format!("mkdir -p $HOME/.xxh && cat > {REMOTE_BOOT} && chmod +x {REMOTE_BOOT}"),
+                &format!("mkdir -p {remote_root} && cat > {remote_boot} && chmod +x {remote_boot}"),
                 BOOTSTRAP_SH.as_bytes().to_vec(),
             )
             .await?;
-        transport
-            .exec(&format!("sh {REMOTE_BOOT} reconcile"))
-            .await?;
+        transport.exec(&boot("reconcile")).await?;
 
         // 4) Deliver only components missing from the host cache (§FR-013, VI).
-        let host_hashes = list_cache(&mut transport).await?;
+        let host_hashes = list_cache(&mut transport, &boot("list-cache")).await?;
         let to_send = super::deploy::missing(&components, &host_hashes);
         let report = DeliveryReport {
             delivered: to_send.len(),
@@ -220,7 +236,7 @@ impl<T: Transport> Session<T> {
         for comp in to_send {
             transport
                 .upload_stream(
-                    &format!("sh {REMOTE_BOOT} recv {} {}", comp.hash, comp.fmt),
+                    &boot(&format!("recv {} {}", comp.hash, comp.fmt)),
                     comp.payload.clone(),
                 )
                 .await?;
@@ -232,15 +248,21 @@ impl<T: Transport> Session<T> {
         let mut prelude = String::new();
         for comp in &components {
             match comp.kind {
+                // Shell packages extend PATH and may ship an env.sh of their own
+                // (e.g. zsh-bin exports FPATH at its delivered functions dir).
                 ComponentKind::Shell => prelude.push_str(&format!(
-                    "export PATH=\"$HOME/.xxh/cache/{}/bin:$PATH\"; ",
-                    comp.hash
+                    "export PATH=\"{root}/cache/{h}/bin:$PATH\"; \
+                     XXH_COMPONENT_DIR={root}/cache/{h}; export XXH_COMPONENT_DIR; \
+                     . {root}/cache/{h}/env.sh 2>/dev/null || true; ",
+                    root = remote_root,
+                    h = comp.hash
                 )),
                 // XXH_COMPONENT_DIR lets an env.sh reference its own cache dir
                 // (PATH for tool packages, TERMINFO/SSL_CERT_FILE for nix ones).
                 ComponentKind::Config | ComponentKind::Plugin => prelude.push_str(&format!(
-                    "XXH_COMPONENT_DIR=$HOME/.xxh/cache/{h}; export XXH_COMPONENT_DIR; \
-                     . $HOME/.xxh/cache/{h}/env.sh 2>/dev/null || true; ",
+                    "XXH_COMPONENT_DIR={root}/cache/{h}; export XXH_COMPONENT_DIR; \
+                     . {root}/cache/{h}/env.sh 2>/dev/null || true; ",
+                    root = remote_root,
                     h = comp.hash
                 )),
             }
@@ -248,7 +270,7 @@ impl<T: Transport> Session<T> {
 
         let shell_cmd = match launch {
             ShellLaunch::Packaged { hash, bin_rel } => {
-                format!("$HOME/.xxh/cache/{hash}/{bin_rel}")
+                format!("{remote_root}/cache/{hash}/{bin_rel}")
             }
             ShellLaunch::HostBinary(name) => name,
         };
@@ -257,6 +279,7 @@ impl<T: Transport> Session<T> {
             transport,
             platform,
             keep: matches!(eff.cleanup, CleanupMode::Keep),
+            remote_root,
             session_id: session_id(),
             shell_cmd,
             prelude,
@@ -279,11 +302,13 @@ impl<T: Transport> Session<T> {
     fn shell_invocation(&self, shell_cmd: &str) -> String {
         let keep = if self.keep { "1" } else { "0" };
         // bootstrap `run` installs the cleanup trap, then execs the given argv.
+        // XXH_ROOT is pinned so the script targets exactly the resolved root.
         format!(
-            "sh {REMOTE_BOOT} run {} {keep} sh -c '{}exec {}'",
+            "XXH_ROOT={root} sh {root}/boot.sh run {} {keep} sh -c '{}exec {}'",
             self.session_id,
             self.prelude.replace('\'', "'\\''"),
-            shell_cmd.replace('\'', "'\\''")
+            shell_cmd.replace('\'', "'\\''"),
+            root = self.remote_root,
         )
     }
 
@@ -316,8 +341,11 @@ impl<T: Transport> Session<T> {
     }
 }
 
-async fn list_cache<T: Transport>(t: &mut T) -> Result<BTreeSet<String>, SessionError> {
-    let out = t.exec(&format!("sh {REMOTE_BOOT} list-cache")).await?;
+async fn list_cache<T: Transport>(
+    t: &mut T,
+    list_cmd: &str,
+) -> Result<BTreeSet<String>, SessionError> {
+    let out = t.exec(list_cmd).await?;
     Ok(out
         .stdout_str()
         .lines()
@@ -351,6 +379,68 @@ pub fn minimal_env_component(fmt: &str) -> Result<Component, ShellError> {
     comp
 }
 
+/// Build a component carrying the client's compiled terminfo entry for `$TERM`.
+///
+/// Modern terminals (ghostty, kitty, wezterm, …) set a `TERM` most hosts have no
+/// terminfo for, which breaks line editing (backspace/cursor artefacts in zle).
+/// The client has the entry — deliver it and point `TERMINFO_DIRS` at the copy.
+/// `None` when `$TERM` is unset or the entry cannot be found locally (then the
+/// host's own database is the best we can do).
+pub fn terminfo_component(fmt: &str) -> Option<Component> {
+    let term = std::env::var("TERM").ok()?;
+    let src = find_local_terminfo(&term)?;
+    let first = term.chars().next()?;
+
+    let dir = std::env::temp_dir().join(format!("xxh-ti-{}", std::process::id()));
+    let entry_dir = dir.join("terminfo").join(first.to_string());
+    std::fs::create_dir_all(&entry_dir).ok()?;
+    std::fs::copy(&src, entry_dir.join(&term)).ok()?;
+    // Trailing empty element keeps the host's compiled-in default search path.
+    std::fs::write(
+        dir.join("env.sh"),
+        "export TERMINFO_DIRS=\"$XXH_COMPONENT_DIR/terminfo:${TERMINFO_DIRS:-}\"\n",
+    )
+    .ok()?;
+    let comp = Component::pack_dir(ComponentKind::Config, &dir, fmt).ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    comp
+}
+
+/// Locate the compiled terminfo entry for `term` in the standard client-side
+/// locations (`$TERMINFO`, `~/.terminfo`, `$TERMINFO_DIRS`, system dirs).
+fn find_local_terminfo(term: &str) -> Option<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(d) = std::env::var_os("TERMINFO") {
+        dirs.push(d.into());
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        dirs.push(std::path::Path::new(&h).join(".terminfo"));
+    }
+    if let Some(list) = std::env::var_os("TERMINFO_DIRS") {
+        dirs.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
+    }
+    dirs.extend(
+        ["/usr/share/terminfo", "/lib/terminfo", "/etc/terminfo"]
+            .iter()
+            .map(std::path::PathBuf::from),
+    );
+    find_terminfo_in(&dirs, term)
+}
+
+fn find_terminfo_in(dirs: &[std::path::PathBuf], term: &str) -> Option<std::path::PathBuf> {
+    let first = term.chars().next()?;
+    for d in dirs {
+        // Linux layout: <dir>/<first-char>/<term>; macOS uses a hex directory.
+        for sub in [first.to_string(), format!("{:x}", first as u32)] {
+            let p = d.join(sub).join(term);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     //! Shell-selection unit tests (T026): packaged shell wins; host binary is the
@@ -358,7 +448,12 @@ mod tests {
 
     use super::*;
     use std::sync::{Arc, Mutex};
-    use xxh_transport::{ExecOutput, PtySpec, TransportError};
+    use xxh_transport::{ExecOutput, PtySpec, ResolvedSshTarget, TransportError};
+
+    /// SSH target wrapped as the generalized `ResolvedTarget` the trait now takes.
+    fn ssh_target(alias: &str) -> ResolvedTarget {
+        ResolvedTarget::Ssh(ResolvedSshTarget::new(alias))
+    }
 
     /// Scripted transport: `detect` answers with a Linux host, `command -v` is
     /// answered from `host_shells`, everything else succeeds; every command that
@@ -392,7 +487,7 @@ mod tests {
     impl Transport for MockTransport {
         async fn connect(
             &mut self,
-            _t: &ResolvedSshTarget,
+            _t: &ResolvedTarget,
             _a: &AuthPolicy,
         ) -> Result<(), TransportError> {
             Ok(())
@@ -418,6 +513,9 @@ mod tests {
             if cmd.contains("detect") {
                 return Ok(Self::ok("Linux x86_64 | tar gzip"));
             }
+            if cmd.contains("-- root") {
+                return Ok(Self::ok("/home/mock/.xxh"));
+            }
             Ok(Self::ok(""))
         }
         async fn open_pty(&mut self, _spec: &PtySpec) -> Result<i32, TransportError> {
@@ -435,6 +533,9 @@ mod tests {
             cleanup: CleanupMode::Ephemeral,
             transport: xxh_config::TransportBackend::Russh,
             connect_timeout_s: 10,
+            user: None,
+            identity: None,
+            container_runtime: xxh_config::RuntimeSetting::Auto,
         }
     }
 
@@ -447,6 +548,23 @@ mod tests {
         crate::shellpkg::testenv::shells_dir(&dir)
     }
 
+    #[test]
+    fn terminfo_lookup_checks_char_and_hex_layouts() {
+        let base = std::env::temp_dir().join(format!("xxh-ti-test-{}", std::process::id()));
+        // Linux layout: x/xterm-ghostty; macOS layout: 78/xterm-ghostty.
+        std::fs::create_dir_all(base.join("linux/x")).unwrap();
+        std::fs::write(base.join("linux/x/xterm-ghostty"), b"ti").unwrap();
+        std::fs::create_dir_all(base.join("mac/78")).unwrap();
+        std::fs::write(base.join("mac/78/xterm-ghostty"), b"ti").unwrap();
+
+        let found = find_terminfo_in(&[base.join("linux")], "xterm-ghostty");
+        assert!(found.is_some(), "char-dir layout must resolve");
+        let found = find_terminfo_in(&[base.join("mac")], "xterm-ghostty");
+        assert!(found.is_some(), "hex-dir layout must resolve");
+        assert!(find_terminfo_in(&[base.join("linux")], "kitty").is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[tokio::test]
     async fn host_shell_is_used_when_no_package_exists() {
         let _env = no_shell_packages();
@@ -456,7 +574,7 @@ mod tests {
         };
         let s = Session::establish(
             t,
-            &ResolvedSshTarget::new("h"),
+            &ssh_target("h"),
             &eff("bash"),
             &[],
             &[],
@@ -474,7 +592,7 @@ mod tests {
         let probe = t.clone();
         let err = match Session::establish(
             t,
-            &ResolvedSshTarget::new("h"),
+            &ssh_target("h"),
             &eff("zsh"),
             &[],
             &[],
@@ -506,7 +624,7 @@ mod tests {
         let env = vec![minimal_env_component("gz").unwrap()];
         let s = Session::establish(
             t,
-            &ResolvedSshTarget::new("h"),
+            &ssh_target("h"),
             &eff("sh"),
             &env,
             &[],

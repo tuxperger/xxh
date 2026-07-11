@@ -54,7 +54,9 @@ pub struct Platform {
 }
 
 impl Platform {
-    /// Parse the bootstrap `detect` line, e.g. `"Linux x86_64 | tar gzip zstd"`.
+    /// Parse the bootstrap `detect` line, e.g.
+    /// `"Linux x86_64 glibc | tar gzip zstd"` (the libc token is optional and
+    /// best-effort, U1 — older bootstraps emit only `os arch`).
     pub fn parse_detect(line: &str) -> Result<Self, ShellError> {
         let (uname_part, caps_part) = match line.split_once('|') {
             Some((a, b)) => (a.trim(), b.trim()),
@@ -67,6 +69,11 @@ impl Platform {
         let arch_raw = it.next().ok_or_else(|| {
             ShellError::Unsupported(format!("no arch in detect output: {line:?}"))
         })?;
+        let libc = match it.next() {
+            Some("glibc") => Libc::Glibc,
+            Some("musl") => Libc::Musl,
+            _ => Libc::Unknown,
+        };
 
         let os = match os_raw {
             "Linux" => Os::Linux,
@@ -92,7 +99,7 @@ impl Platform {
         let p = Platform {
             os,
             arch,
-            libc: Libc::Unknown,
+            libc,
             caps,
         };
         p.ensure_supported()?;
@@ -160,9 +167,10 @@ mod tests {
 
     #[test]
     fn parses_linux_glibc_host() {
-        let p = Platform::parse_detect("Linux x86_64 | tar gzip zstd").unwrap();
+        let p = Platform::parse_detect("Linux x86_64 glibc | tar gzip zstd").unwrap();
         assert_eq!(p.os, Os::Linux);
         assert_eq!(p.arch, Arch::X86_64);
+        assert_eq!(p.libc, Libc::Glibc);
         assert!(p.caps.has_zstd);
         assert_eq!(p.preferred_archive_fmt(), "zst");
     }
@@ -170,10 +178,19 @@ mod tests {
     #[test]
     fn parses_alpine_busybox_host_without_zstd() {
         // Critical musl/BusyBox case: trimmed caps, only tar+gzip.
-        let p = Platform::parse_detect("Linux aarch64 | tar gzip").unwrap();
+        let p = Platform::parse_detect("Linux aarch64 musl | tar gzip").unwrap();
         assert_eq!(p.arch, Arch::Aarch64);
+        assert_eq!(p.libc, Libc::Musl);
         assert!(!p.caps.has_zstd);
         assert_eq!(p.preferred_archive_fmt(), "gz");
+    }
+
+    #[test]
+    fn libc_token_is_optional_and_best_effort() {
+        // Older bootstrap format without the libc token still parses (U1).
+        let p = Platform::parse_detect("Linux x86_64 | tar gzip").unwrap();
+        assert_eq!(p.libc, Libc::Unknown);
+        assert_eq!(p.libc_str(), "unknown");
     }
 
     #[test]

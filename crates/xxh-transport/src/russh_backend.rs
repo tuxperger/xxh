@@ -16,7 +16,8 @@ use russh::keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key};
 use russh::{ChannelMsg, Disconnect};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{AuthPolicy, ExecOutput, PtySpec, ResolvedSshTarget, Transport, TransportError};
+use crate::tty::{RawModeGuard, local_tty_size};
+use crate::{AuthPolicy, ExecOutput, PtySpec, ResolvedTarget, Transport, TransportError};
 
 fn te(msg: impl std::fmt::Display) -> TransportError {
     TransportError::Channel(msg.to_string())
@@ -66,23 +67,33 @@ impl Default for RusshTransport {
 impl Transport for RusshTransport {
     async fn connect(
         &mut self,
-        target: &ResolvedSshTarget,
+        target: &ResolvedTarget,
         auth: &AuthPolicy,
     ) -> Result<(), TransportError> {
-        // Resolve ~/.ssh/config (host_name, user, port, identity files, ProxyJump).
+        // SSH family only: a container target fails fast, no network action (C-T6).
+        let ResolvedTarget::Ssh(target) = target else {
+            return Err(TransportError::BackendUnavailable(
+                "russh backend serves SSH targets only; container targets need the \
+                 container runtime backend"
+                    .into(),
+            ));
+        };
+        // Resolve ~/.ssh/config (HostName, User, Port, identity files, ProxyJump).
+        // NB: use the getters — `host()`/`port()`/`user()` merge the per-host
+        // config over defaults; the raw `host_name` field is just the alias.
         let sshcfg = russh_config::parse_home(&target.alias).ok();
         let host = sshcfg
             .as_ref()
-            .map(|c| c.host_name.clone())
+            .map(|c| c.host().to_string())
             .unwrap_or_else(|| target.alias.clone());
         let port = target
             .port
-            .or_else(|| sshcfg.as_ref().and_then(|c| c.port))
+            .or_else(|| sshcfg.as_ref().map(|c| c.port()))
             .unwrap_or(22);
         let user = target
             .user
             .clone()
-            .or_else(|| sshcfg.as_ref().and_then(|c| c.user.clone()))
+            .or_else(|| sshcfg.as_ref().map(|c| c.user()))
             .unwrap_or_else(whoami);
 
         let config = Arc::new(client::Config {
@@ -103,11 +114,19 @@ impl Transport for RusshTransport {
                 .map_err(|e| classify_connect(&e))?;
 
         // Auth: public keys from identity files, then interactive fallback.
+        // An explicit identity (ssh `-i`) is used exclusively — a broken path is
+        // a clear auth error, not a silent fallback to other keys.
         let mut authed = false;
         if auth.allow_pubkey {
-            for id in identity_files(sshcfg.as_ref()) {
-                let Ok(key) = load_secret_key(&id, None) else {
-                    continue;
+            let ids = match &target.identity {
+                Some(explicit) => vec![explicit.clone()],
+                None => identity_files(sshcfg.as_ref()),
+            };
+            for id in ids {
+                let key = match load_identity(&id) {
+                    Ok(k) => k,
+                    Err(e) if target.identity.is_some() => return Err(e),
+                    Err(_) => continue,
                 };
                 let kwh = PrivateKeyWithHashAlg::new(Arc::new(key), None);
                 if let Ok(AuthResult::Success) = handle.authenticate_publickey(&user, kwh).await {
@@ -153,12 +172,14 @@ impl Transport for RusshTransport {
 
     async fn open_pty(&mut self, spec: &PtySpec) -> Result<i32, TransportError> {
         let handle = self.handle_mut()?;
-        let mut ch = handle.channel_open_session().await.map_err(te)?;
+        let ch = handle.channel_open_session().await.map_err(te)?;
+        // Use the real local terminal size; spec dims are the non-tty fallback.
+        let (cols, rows) = local_tty_size().unwrap_or((spec.cols, spec.rows));
         ch.request_pty(
             true,
             &spec.term,
-            spec.cols as u32,
-            spec.rows as u32,
+            u32::from(cols),
+            u32::from(rows),
             0,
             0,
             &[],
@@ -175,8 +196,17 @@ impl Transport for RusshTransport {
             .await
             .map_err(te)?;
 
+        let (mut read_half, write_half) = ch.split();
+        let write_half = std::sync::Arc::new(write_half);
+
+        // Raw mode for the interactive phase: keystrokes (Tab, Ctrl-C, …) go to
+        // the remote PTY as bytes instead of being interpreted by the local tty
+        // (Ctrl-C must interrupt the remote command, not kill the session).
+        // The guard restores the terminal on scope exit, panics included.
+        let _raw = RawModeGuard::enter();
+
         // Forward local stdin to the channel; stream remote output to std{out,err}.
-        let mut writer = ch.make_writer();
+        let mut writer = write_half.make_writer();
         let stdin_task = tokio::spawn(async move {
             let mut stdin = tokio::io::stdin();
             let mut buf = [0u8; 4096];
@@ -192,10 +222,26 @@ impl Transport for RusshTransport {
             }
         });
 
+        // Propagate local terminal resizes to the remote PTY (SIGWINCH).
+        let winch_half = write_half.clone();
+        let winch_task = tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let Ok(mut winch) = signal(SignalKind::window_change()) else {
+                return;
+            };
+            while winch.recv().await.is_some() {
+                if let Some((c, r)) = local_tty_size() {
+                    let _ = winch_half
+                        .window_change(u32::from(c), u32::from(r), 0, 0)
+                        .await;
+                }
+            }
+        });
+
         let mut stdout = tokio::io::stdout();
         let mut stderr = tokio::io::stderr();
         let mut code = 0;
-        while let Some(msg) = ch.wait().await {
+        while let Some(msg) = read_half.wait().await {
             match msg {
                 ChannelMsg::Data { data } => {
                     let _ = stdout.write_all(&data).await;
@@ -210,6 +256,7 @@ impl Transport for RusshTransport {
             }
         }
         stdin_task.abort();
+        winch_task.abort();
         Ok(code)
     }
 
@@ -291,6 +338,24 @@ fn read_secret(prompt: &str) -> Result<String, TransportError> {
         .read_line(&mut line)
         .map_err(TransportError::Io)?;
     Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+/// Load a private key; an encrypted key prompts for its passphrase once
+/// (the passphrase is read from the terminal and never logged, Принцип V).
+fn load_identity(path: &std::path::Path) -> Result<russh::keys::PrivateKey, TransportError> {
+    match load_secret_key(path, None) {
+        Ok(key) => Ok(key),
+        Err(russh::keys::Error::KeyIsEncrypted) => {
+            let pass = read_secret(&format!("passphrase for `{}`: ", path.display()))?;
+            load_secret_key(path, Some(&pass)).map_err(|e| {
+                TransportError::Auth(format!("cannot decrypt identity `{}`: {e}", path.display()))
+            })
+        }
+        Err(e) => Err(TransportError::Auth(format!(
+            "cannot load identity `{}`: {e}",
+            path.display()
+        ))),
+    }
 }
 
 /// Candidate identity files: those from ssh-config, else the common defaults.

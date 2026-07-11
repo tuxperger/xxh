@@ -1,8 +1,10 @@
-# Integration matrix against real sshd containers (Принцип VIII, T061,
-# contracts/integration-testing.md C-IT10..13): {debian, ubuntu, alpine} ×
-# {x86_64, aarch64 (qemu/binfmt)}. Every scenario carries the mandatory host
-# cleanliness assert; teardown is guaranteed by the fixtures' RAII Drop plus a
-# final cleanup step even when a test fails.
+# Integration matrix against real containers (Принцип VIII, T061 + 002 T029,
+# contracts/integration-testing.md C-IT10..13, dual-transport-testing.md C-DT1):
+# {debian, ubuntu, alpine} × {x86_64, aarch64 (qemu/binfmt)} × {ssh, container}.
+# The same test images are targeted by BOTH transports; alpine×container is the
+# mandatory musl/BusyBox cell. Every scenario carries the mandatory cleanliness
+# assert (and, for the container path, the image-immutability assert); teardown is
+# guaranteed by the fixtures' RAII Drop plus a final cleanup step even on failure.
 name: integration
 
 on:
@@ -11,16 +13,20 @@ on:
   pull_request:
 
 jobs:
-  sshd-matrix:
+  transport-matrix:
     strategy:
       fail-fast: false
       matrix:
         image: [debian, ubuntu, alpine]
         arch: [x86_64, aarch64]
+        transport: [ssh, container]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       XXH_TEST_IMAGE: ${{ matrix.image }}
+      # The container axis drives docker; podman is a separate smoke via this var
+      # (C-DT1 podman-smoke) on runners that provide it.
+      XXH_TEST_RUNTIME: docker
     steps:
       - uses: actions/checkout@v4
 
@@ -51,12 +57,22 @@ jobs:
           fi
 
       # Per-scenario timeouts come from the job timeout + cargo test's own
-      # granularity; each test binary is one scenario (C-IT12).
-      - name: Run integration scenarios
+      # granularity; each test binary is one scenario (C-IT12). The transport axis
+      # selects which family's scenarios run against this image.
+      - name: Run SSH scenarios
+        if: matrix.transport == 'ssh'
         run: >
           cargo test -p xxh-cli
           --test bootstrap_smoke --test connect_smoke --test cache_reuse
           --test plugin_git_local --test error_classes
+          -- --test-threads=1
+
+      - name: Run container scenarios
+        if: matrix.transport == 'container'
+        run: >
+          cargo test -p xxh-cli
+          --test container_smoke --test container_clean --test container_parity
+          --test container_errors
           -- --test-threads=1
 
       - name: Save base image to cache

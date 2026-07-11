@@ -11,7 +11,9 @@
       "Bash(.specify/scripts/bash/check-prerequisites.sh --json)",
       "Bash(cat .specify/extensions.yml)",
       "Bash(cat .specify/templates/checklist-template.md)",
-      "Bash(.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks)"
+      "Bash(.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks)",
+      "Bash(git -C /home/apokryf/projects/rust/xxh status --short)",
+      "Bash(git -C /home/apokryf/projects/rust/xxh ls-files packages)"
     ]
   }
 }

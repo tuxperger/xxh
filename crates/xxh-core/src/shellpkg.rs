@@ -2,7 +2,7 @@
 //!
 //! Shells are ordinary packages with `provides.shell = "<name>"` in their
 //! manifest and a relocatable tree per platform under `dist/<os>-<arch>/`
-//! (see `packages/shells/zsh/`). The search path is `~/.local/share/xxh/shells`;
+//! (see the `xxh-shell-zsh` repo). The search path is `~/.local/share/xxh/shells`;
 //! when `$XXH_SHELLS_DIR` (colon-separated) is set it **replaces** the search
 //! path entirely — an explicit override that also keeps tests hermetic.
 

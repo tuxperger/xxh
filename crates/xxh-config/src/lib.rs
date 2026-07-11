@@ -58,6 +58,32 @@ impl Default for TransportBackend {
     }
 }
 
+/// Which container runtime drives `container:`-family targets, and the order for
+/// `auto` (002-container-targets, data-model). Distinct from [`TransportBackend`]:
+/// that selects the SSH client, this selects the container runtime (C-A5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeSetting {
+    /// Probe docker, then podman; take the first available (C-A3).
+    Auto,
+    Docker,
+    Podman,
+}
+
+impl Default for RuntimeSetting {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// The `[container]` config section (002-container-targets, Принцип XI).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ContainerConfig {
+    /// Runtime for `container:` targets and the `auto` probe order (default `auto`).
+    #[serde(default)]
+    pub runtime: RuntimeSetting,
+}
+
 fn default_shell() -> String {
     "zsh".to_string()
 }
@@ -83,6 +109,16 @@ pub struct HostOverride {
     pub transport: Option<TransportBackend>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_s: Option<u64>,
+    /// Login user for this host (like ssh `-l`; отсутствие → ssh-config/текущий).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Private key (identity file) for this host (like ssh `-i`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<PathBuf>,
+    /// Container runtime for this target (per-target layer of C-A3 precedence);
+    /// only meaningful for `container:` targets, ignored for SSH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_runtime: Option<RuntimeSetting>,
 }
 
 /// The canonical user configuration file (`~/.config/xxh/config.toml`).
@@ -98,6 +134,16 @@ pub struct Config {
     pub transport: TransportBackend,
     #[serde(default = "default_timeout")]
     pub connect_timeout_s: u64,
+    /// Login user for all hosts unless overridden (§FR-029: ssh-config remains
+    /// the fallback when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Private key (identity file) used for all hosts unless overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<PathBuf>,
+    /// Container-family settings (runtime selection) — Принцип XI, one config.
+    #[serde(default)]
+    pub container: ContainerConfig,
     #[serde(default)]
     pub hosts: BTreeMap<String, HostOverride>,
 }
@@ -110,6 +156,9 @@ impl Default for Config {
             cleanup: CleanupMode::default(),
             transport: TransportBackend::default(),
             connect_timeout_s: default_timeout(),
+            user: None,
+            identity: None,
+            container: ContainerConfig::default(),
             hosts: BTreeMap::new(),
         }
     }
@@ -122,6 +171,12 @@ pub struct CliOverrides {
     pub cleanup: Option<CleanupMode>,
     pub transport: Option<TransportBackend>,
     pub connect_timeout_s: Option<u64>,
+    /// `-l/--user` or the `user@host` prefix.
+    pub user: Option<String>,
+    /// `-i/--identity`.
+    pub identity: Option<PathBuf>,
+    /// `--runtime` (container family only); highest layer of C-A3 precedence.
+    pub container_runtime: Option<RuntimeSetting>,
 }
 
 /// The effective settings for one connection, after applying precedence.
@@ -132,6 +187,13 @@ pub struct Effective {
     pub cleanup: CleanupMode,
     pub transport: TransportBackend,
     pub connect_timeout_s: u64,
+    /// Login user; `None` → ssh-config / current user decide (§FR-029).
+    pub user: Option<String>,
+    /// Explicit private key; `None` → ssh-config / default identities.
+    pub identity: Option<PathBuf>,
+    /// Resolved container runtime after precedence (C-A3). Only consulted for
+    /// `container:` targets; explicit `docker:`/`podman:` schemes override it.
+    pub container_runtime: RuntimeSetting,
 }
 
 impl Config {
@@ -223,14 +285,49 @@ impl Config {
             .or_else(|| ho.and_then(|h| h.connect_timeout_s))
             .unwrap_or(self.connect_timeout_s);
 
+        let user = cli
+            .user
+            .clone()
+            .or_else(|| ho.and_then(|h| h.user.clone()))
+            .or_else(|| self.user.clone());
+
+        let identity = cli
+            .identity
+            .clone()
+            .or_else(|| ho.and_then(|h| h.identity.clone()))
+            .or_else(|| self.identity.clone())
+            .map(expand_tilde);
+
+        // Runtime precedence (C-A3): `--runtime` > per-target > `container.runtime`
+        // > default (`auto`). The explicit `docker:`/`podman:` scheme is applied
+        // later, at the call site, and is never silently overridden (C-A4).
+        let container_runtime = cli
+            .container_runtime
+            .or_else(|| ho.and_then(|h| h.container_runtime))
+            .unwrap_or(self.container.runtime);
+
         Effective {
             shell,
             enabled_plugins,
             cleanup,
             transport,
             connect_timeout_s,
+            user,
+            identity,
+            container_runtime,
         }
     }
+}
+
+/// Expand a leading `~/` to the user's home directory: config-file values are
+/// not shell-expanded, and both transports need a real path (ssh `-i` parity).
+fn expand_tilde(p: PathBuf) -> PathBuf {
+    if let Ok(rest) = p.strip_prefix("~") {
+        if let Some(bd) = directories::BaseDirs::new() {
+            return bd.home_dir().join(rest);
+        }
+    }
+    p
 }
 
 #[cfg(test)]
@@ -274,6 +371,97 @@ mod tests {
         };
         let e = cfg.resolve("web", &cli);
         assert_eq!(e.shell, "zsh");
+    }
+
+    #[test]
+    fn user_and_identity_follow_precedence() {
+        let cfg: Config = toml::from_str(
+            r#"
+            user = "deploy"
+            identity = "/keys/global"
+            [hosts.web]
+            user = "www"
+            identity = "/keys/web"
+            "#,
+        )
+        .unwrap();
+
+        // Global values apply to hosts without overrides.
+        let e = cfg.resolve("other", &CliOverrides::default());
+        assert_eq!(e.user.as_deref(), Some("deploy"));
+        assert_eq!(e.identity.as_deref(), Some(Path::new("/keys/global")));
+
+        // Per-host override wins over global.
+        let e = cfg.resolve("web", &CliOverrides::default());
+        assert_eq!(e.user.as_deref(), Some("www"));
+        assert_eq!(e.identity.as_deref(), Some(Path::new("/keys/web")));
+
+        // CLI flag (-l / -i / user@host) wins over everything.
+        let cli = CliOverrides {
+            user: Some("root".into()),
+            identity: Some(PathBuf::from("/keys/cli")),
+            ..Default::default()
+        };
+        let e = cfg.resolve("web", &cli);
+        assert_eq!(e.user.as_deref(), Some("root"));
+        assert_eq!(e.identity.as_deref(), Some(Path::new("/keys/cli")));
+
+        // Unset everywhere → None (ssh-config decides, §FR-029).
+        let bare = Config::default().resolve("web", &CliOverrides::default());
+        assert_eq!(bare.user, None);
+        assert_eq!(bare.identity, None);
+    }
+
+    #[test]
+    fn identity_tilde_expands_to_home() {
+        let cfg: Config = toml::from_str(r#"identity = "~/.ssh/key""#).unwrap();
+        let e = cfg.resolve("any", &CliOverrides::default());
+        let id = e.identity.expect("identity set");
+        assert!(id.is_absolute(), "expanded path must be absolute: {id:?}");
+        assert!(id.ends_with(".ssh/key"));
+    }
+
+    #[test]
+    fn container_runtime_follows_precedence() {
+        // Default with no config → auto.
+        assert_eq!(
+            Config::default()
+                .resolve("any", &CliOverrides::default())
+                .container_runtime,
+            RuntimeSetting::Auto
+        );
+
+        let cfg: Config = toml::from_str(
+            r#"
+            [container]
+            runtime = "docker"
+            [hosts.app1]
+            container_runtime = "podman"
+            "#,
+        )
+        .unwrap();
+
+        // Global `container.runtime` applies to targets without an override.
+        assert_eq!(
+            cfg.resolve("other", &CliOverrides::default())
+                .container_runtime,
+            RuntimeSetting::Docker
+        );
+        // Per-target override wins over global.
+        assert_eq!(
+            cfg.resolve("app1", &CliOverrides::default())
+                .container_runtime,
+            RuntimeSetting::Podman
+        );
+        // `--runtime` flag wins over everything.
+        let cli = CliOverrides {
+            container_runtime: Some(RuntimeSetting::Docker),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve("app1", &cli).container_runtime,
+            RuntimeSetting::Docker
+        );
     }
 
     #[test]

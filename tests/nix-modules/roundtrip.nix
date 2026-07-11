@@ -18,9 +18,14 @@ let
           enabledPlugins = [ "alpha" "beta" ];
           cleanup = "keep";
           transport = "ssh";
+          containerRuntime = "podman";
           connectTimeoutS = 42;
+          user = "deploy";
+          identity = "/keys/global";
           hosts.web.default_shell = "fish";
           hosts.web.connect_timeout_s = 5;
+          hosts.web.user = "www";
+          hosts.web.container_runtime = "docker";
         };
       }
     ];
@@ -39,8 +44,11 @@ pkgs.runCommand "xxh-nix-module-roundtrip" { nativeBuildInputs = [ xxh ]; } ''
   cat global.out
   grep -q 'shell             = bash' global.out
   grep -q 'transport         = Ssh' global.out
+  grep -q 'container_runtime = Podman' global.out
   grep -q 'cleanup           = Keep' global.out
   grep -q 'connect_timeout_s = 42' global.out
+  grep -q 'user              = deploy' global.out
+  grep -q 'identity          = /keys/global' global.out
   grep -q 'enabled_plugins   = \["alpha", "beta"\]' global.out
 
   # Per-host override wins where declared, inherits everywhere else.
@@ -49,6 +57,9 @@ pkgs.runCommand "xxh-nix-module-roundtrip" { nativeBuildInputs = [ xxh ]; } ''
   grep -q 'shell             = fish' web.out
   grep -q 'connect_timeout_s = 5' web.out
   grep -q 'transport         = Ssh' web.out
+  grep -q 'container_runtime = Docker' web.out
+  grep -q 'user              = www' web.out
+  grep -q 'identity          = /keys/global' web.out
 
   echo "round-trip: module -> config.toml -> xxh-config parser OK"
   touch $out

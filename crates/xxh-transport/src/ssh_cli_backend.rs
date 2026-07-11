@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use crate::{AuthPolicy, ExecOutput, PtySpec, ResolvedSshTarget, Transport, TransportError};
+use crate::{AuthPolicy, ExecOutput, PtySpec, ResolvedTarget, Transport, TransportError};
 
 /// Transport backed by the host's `ssh` binary.
 pub struct SshCliTransport {
@@ -51,9 +51,17 @@ impl SshCliTransport {
 impl Transport for SshCliTransport {
     async fn connect(
         &mut self,
-        target: &ResolvedSshTarget,
+        target: &ResolvedTarget,
         _auth: &AuthPolicy,
     ) -> Result<(), TransportError> {
+        // SSH family only: a container target fails fast, no process spawned (C-T6).
+        let ResolvedTarget::Ssh(target) = target else {
+            return Err(TransportError::BackendUnavailable(
+                "system-ssh backend serves SSH targets only; container targets need \
+                 the container runtime backend"
+                    .into(),
+            ));
+        };
         self.alias = target.alias.clone();
 
         let ctl_dir = std::env::temp_dir().join(format!("xxh-ctl-{}", std::process::id()));
@@ -75,6 +83,13 @@ impl Transport for SshCliTransport {
         if let Some(u) = &target.user {
             base.push("-o".into());
             base.push(format!("User={u}"));
+        }
+        if let Some(id) = &target.identity {
+            // Explicit key: use it exclusively (same semantics as the russh backend).
+            base.push("-i".into());
+            base.push(id.display().to_string());
+            base.push("-o".into());
+            base.push("IdentitiesOnly=yes".into());
         }
         if let Some(p) = target.port {
             base.push("-p".into());

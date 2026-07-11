@@ -17,7 +17,9 @@ use crate::source::{Availability, FetchedPackage, PackageSource, SourceSpec, Sup
 /// Pinned nixpkgs for reproducible builds (C-N4). Overridable for spikes/tests via
 /// `$XXH_NIXPKGS_PIN`; updating the default is a controlled operation tied to the
 /// repo's own flake pin (plan §Пиннинг).
-const DEFAULT_NIXPKGS_PIN: &str = "github:NixOS/nixpkgs/nixos-24.05";
+// nixos-25.05: pkgsStatic coverage is notably better than 24.05 (e.g. htop
+// fails to build statically on 24.05).
+const DEFAULT_NIXPKGS_PIN: &str = "github:NixOS/nixpkgs/nixos-25.05";
 
 pub struct NixProvider;
 
@@ -64,19 +66,21 @@ fn nix_available() -> Result<(), String> {
     }
 }
 
-/// Static audit (§FR-038, C-N1): a self-contained artefact must carry no runtime
-/// references into `/nix/store`. Any hit ⇒ the package is not statically
-/// self-sufficient ⇒ error class plugin ("NotStatic").
-pub fn audit_no_store_refs(dir: &Path) -> Result<(), PluginError> {
+/// Static audit (§FR-038, C-N1): every ELF in the artefact must be statically
+/// linked — no `PT_INTERP` (dynamic loader) program header. Any hit ⇒ the
+/// package is not statically self-sufficient ⇒ error class plugin ("NotStatic").
+///
+/// Note: a *string* mentioning `/nix/store/` inside a static binary is fine —
+/// e.g. ncurses bakes its default terminfo search path in; the provider ships
+/// terminfo/cacert separately and overrides via env (§FR-037), so only real
+/// dynamic linkage makes an artefact non-self-sufficient.
+pub fn audit_static(dir: &Path) -> Result<(), PluginError> {
     fn walk(dir: &Path, hits: &mut Vec<String>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
             if path.is_dir() {
                 walk(&path, hits)?;
-            } else if std::fs::read(&path)?
-                .windows(b"/nix/store/".len())
-                .any(|w| w == b"/nix/store/")
-            {
+            } else if elf_has_interp(&std::fs::read(&path)?).unwrap_or(false) {
                 hits.push(path.display().to_string());
             }
         }
@@ -88,11 +92,68 @@ pub fn audit_no_store_refs(dir: &Path) -> Result<(), PluginError> {
         Ok(())
     } else {
         Err(PluginError::Other(format!(
-            "NotStatic: artefact still references /nix/store at runtime ({}); \
+            "NotStatic: dynamically linked ELF (has an interpreter) in artefact: {}; \
              the package is not statically self-sufficient (FR-038)",
             hits.join(", ")
         )))
     }
+}
+
+/// `Some(true)` iff `data` is an ELF with a `PT_INTERP` program header
+/// (i.e. dynamically linked); `None` for non-ELF files.
+fn elf_has_interp(data: &[u8]) -> Option<bool> {
+    const PT_INTERP: u32 = 3;
+    if data.len() < 0x40 || &data[..4] != b"\x7fELF" {
+        return None;
+    }
+    let is64 = match data[4] {
+        1 => false,
+        2 => true,
+        _ => return None,
+    };
+    let le = match data[5] {
+        1 => true,
+        2 => false,
+        _ => return None,
+    };
+    let u16at = |off: usize| -> Option<u64> {
+        let b: [u8; 2] = data.get(off..off + 2)?.try_into().ok()?;
+        Some(u64::from(if le {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        }))
+    };
+    let u32at = |off: usize| -> Option<u32> {
+        let b: [u8; 4] = data.get(off..off + 4)?.try_into().ok()?;
+        Some(if le {
+            u32::from_le_bytes(b)
+        } else {
+            u32::from_be_bytes(b)
+        })
+    };
+    let phoff = if is64 {
+        let b: [u8; 8] = data.get(0x20..0x28)?.try_into().ok()?;
+        if le {
+            u64::from_le_bytes(b)
+        } else {
+            u64::from_be_bytes(b)
+        }
+    } else {
+        u64::from(u32at(0x1c)?)
+    };
+    let (phentsize, phnum) = if is64 {
+        (u16at(0x36)?, u16at(0x38)?)
+    } else {
+        (u16at(0x2a)?, u16at(0x2c)?)
+    };
+    for i in 0..phnum {
+        let off = usize::try_from(phoff + i * phentsize).ok()?;
+        if u32at(off)? == PT_INTERP {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 fn run_nix(args: &[&str]) -> Result<String, PluginError> {
@@ -209,7 +270,7 @@ impl PackageSource for NixProvider {
                 .map_err(|e| PluginError::Other(format!("packaging nix artefact: {e}")))?;
 
             // The artefact must be statically self-sufficient (§FR-038).
-            audit_no_store_refs(&staging.join("bin")).inspect_err(|_| {
+            audit_static(&staging.join("bin")).inspect_err(|_| {
                 let _ = std::fs::remove_dir_all(&staging);
             })?;
 
@@ -309,14 +370,36 @@ mod tests {
         ));
     }
 
+    /// Fabricate a minimal ELF64-LE with the given program-header types.
+    fn fake_elf(ptypes: &[u32]) -> Vec<u8> {
+        let mut d = vec![0u8; 0x40 + ptypes.len() * 0x38];
+        d[..4].copy_from_slice(b"\x7fELF");
+        d[4] = 2; // 64-bit
+        d[5] = 1; // little-endian
+        d[0x20..0x28].copy_from_slice(&0x40u64.to_le_bytes()); // e_phoff
+        d[0x36..0x38].copy_from_slice(&0x38u16.to_le_bytes()); // e_phentsize
+        d[0x38..0x3a].copy_from_slice(&(ptypes.len() as u16).to_le_bytes()); // e_phnum
+        for (i, pt) in ptypes.iter().enumerate() {
+            let off = 0x40 + i * 0x38;
+            d[off..off + 4].copy_from_slice(&pt.to_le_bytes());
+        }
+        d
+    }
+
     #[test]
-    fn store_ref_audit_flags_dynamic_artefacts() {
+    fn static_audit_flags_only_dynamic_elves() {
         let dir = std::env::temp_dir().join(format!("xxh-audit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ok.bin"), b"\x7fELF static content").unwrap();
-        assert!(audit_no_store_refs(&dir).is_ok());
-        std::fs::write(dir.join("bad.bin"), b"\x7fELF /nix/store/abc-libc.so").unwrap();
-        assert!(audit_no_store_refs(&dir).is_err());
+        // Static ELF (PT_LOAD only) — even with a baked /nix/store string — is fine.
+        let mut ok = fake_elf(&[1]); // PT_LOAD
+        ok.extend_from_slice(b"/nix/store/abc-ncurses/share/terminfo");
+        std::fs::write(dir.join("ok.bin"), ok).unwrap();
+        std::fs::write(dir.join("data.txt"), b"not an elf at all").unwrap();
+        assert!(audit_static(&dir).is_ok());
+        // A PT_INTERP header means a dynamic loader is required → NotStatic.
+        std::fs::write(dir.join("bad.bin"), fake_elf(&[1, 3])).unwrap();
+        let err = audit_static(&dir).unwrap_err();
+        assert!(err.to_string().contains("NotStatic"), "got: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

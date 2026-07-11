@@ -8,6 +8,7 @@
 #
 # Subcommands (dispatched by the client so one script serves every step):
 #   detect                 -> print "os arch | caps" (uname + tool availability)
+#   root                   -> print the resolved writable root ($HOME/$TMPDIR/tmp)
 #   list-cache             -> print blake3 names already present in the host cache
 #   recv <hash> <fmt>      -> receive a component archive on stdin into cache/<hash>
 #   run <session-id> <fmt> <keep> <shell-cmd...>
@@ -18,9 +19,39 @@
 
 set -eu
 
-XXH_ROOT="${XXH_ROOT:-$HOME/.xxh}"
-CACHE_DIR="$XXH_ROOT/cache"
-SESS_DIR="$XXH_ROOT/sessions"
+# The environment root. Resolved lazily (xxh_need_root) so `detect` never needs a
+# writable filesystem; an explicit XXH_ROOT from the client is always honoured.
+XXH_ROOT="${XXH_ROOT:-}"
+CACHE_DIR=""
+SESS_DIR=""
+
+# Pick the environment root inside the first writable base — $HOME, then $TMPDIR,
+# then /tmp (C-C12, FR-011). Bare/minimal images whose exec user has no writable
+# $HOME still get a working root; a target with none anywhere is a hard, explicit
+# error BEFORE anything is delivered. An explicit XXH_ROOT short-circuits the probe.
+xxh_resolve_root() {
+    if [ -n "${XXH_ROOT:-}" ]; then
+        printf '%s\n' "$XXH_ROOT"
+        return 0
+    fi
+    for _base in "${HOME:-}" "${TMPDIR:-}" /tmp; do
+        [ -n "$_base" ] || continue
+        if mkdir -p "$_base/.xxh" 2>/dev/null && [ -w "$_base/.xxh" ]; then
+            printf '%s\n' "$_base/.xxh"
+            return 0
+        fi
+    done
+    echo "xxh-bootstrap: no writable directory for the xxh environment \
+(tried \$HOME, \$TMPDIR, /tmp)" >&2
+    return 1
+}
+
+# Resolve the root and derive dependent paths; call before any root use.
+xxh_need_root() {
+    XXH_ROOT="$(xxh_resolve_root)" || exit 1
+    CACHE_DIR="$XXH_ROOT/cache"
+    SESS_DIR="$XXH_ROOT/sessions"
+}
 
 xxh_init_dirs() {
     mkdir -p "$CACHE_DIR" "$SESS_DIR"
@@ -62,13 +93,28 @@ xxh_reconcile() {
 xxh_detect() {
     _os=$(uname -s 2>/dev/null || echo Unknown)
     _arch=$(uname -m 2>/dev/null || echo unknown)
+    # Best-effort libc flavour (U1): drives plugin target masks like
+    # `linux/x86_64/glibc`; `unknown` is a valid answer.
+    _libc=unknown
+    for _f in /lib/ld-musl-* /usr/lib/ld-musl-*; do
+        [ -e "$_f" ] && _libc=musl && break
+    done
+    if [ "$_libc" = unknown ]; then
+        if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+            _libc=glibc
+        elif ldd --version 2>&1 | grep -qi musl; then
+            _libc=musl
+        elif ldd --version 2>&1 | grep -qiE 'glibc|gnu libc'; then
+            _libc=glibc
+        fi
+    fi
     _caps=""
     for _t in tar gzip zstd; do
         if command -v "$_t" >/dev/null 2>&1; then
             _caps="$_caps $_t"
         fi
     done
-    printf '%s %s |%s\n' "$_os" "$_arch" "$_caps"
+    printf '%s %s %s |%s\n' "$_os" "$_arch" "$_libc" "$_caps"
 }
 
 xxh_list_cache() {
@@ -117,9 +163,10 @@ _cmd="${1:-}"
 [ "$#" -gt 0 ] && shift || true
 case "$_cmd" in
     detect)     xxh_detect ;;
-    list-cache) xxh_init_dirs; xxh_list_cache ;;
-    recv)       xxh_init_dirs; xxh_recv "$@" ;;
-    run)        xxh_init_dirs; xxh_run "$@" ;;
-    reconcile)  xxh_reconcile ;;
+    root)       xxh_need_root; printf '%s\n' "$XXH_ROOT" ;;
+    list-cache) xxh_need_root; xxh_init_dirs; xxh_list_cache ;;
+    recv)       xxh_need_root; xxh_init_dirs; xxh_recv "$@" ;;
+    run)        xxh_need_root; xxh_init_dirs; xxh_run "$@" ;;
+    reconcile)  xxh_need_root; xxh_reconcile ;;
     *)          echo "xxh-bootstrap: unknown subcommand '$_cmd'" >&2; exit 2 ;;
 esac

@@ -14,6 +14,7 @@ let
 
   cleanupType = types.enum [ "ephemeral" "keep" ];
   transportType = types.enum [ "russh" "ssh" ];
+  runtimeType = types.enum [ "auto" "docker" "podman" ];
 
   # Per-host overrides: every field optional; null means "inherit global"
   # (mirrors HostOverride; list-valued fields replace, not merge).
@@ -43,6 +44,21 @@ let
         type = types.nullOr types.ints.unsigned;
         default = null;
         description = "Connect timeout (seconds) for this host.";
+      };
+      user = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Login user for this host (null: ssh-config decides).";
+      };
+      identity = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Private key (identity file) path for this host.";
+      };
+      container_runtime = mkOption {
+        type = types.nullOr runtimeType;
+        default = null;
+        description = "Container runtime for this target (container: targets only).";
       };
     };
   };
@@ -81,10 +97,28 @@ rec {
       description = "SSH transport backend.";
     };
 
+    containerRuntime = mkOption {
+      type = runtimeType;
+      default = "auto";
+      description = "Container runtime for container: targets (config: container.runtime).";
+    };
+
     connectTimeoutS = mkOption {
       type = types.ints.unsigned;
       default = 10;
       description = "Connect timeout in seconds (config: connect_timeout_s).";
+    };
+
+    user = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Login user for all hosts (config: user; null: ssh-config decides).";
+    };
+
+    identity = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Private key (identity file) path for all hosts (config: identity).";
     };
 
     hosts = mkOption {
@@ -106,6 +140,11 @@ rec {
         cleanup = cfg.cleanup;
         transport = cfg.transport;
         connect_timeout_s = cfg.connectTimeoutS;
+        container = { runtime = cfg.containerRuntime; };
+      } // lib.optionalAttrs (cfg.user != null) {
+        user = cfg.user;
+      } // lib.optionalAttrs (cfg.identity != null) {
+        identity = cfg.identity;
       } // lib.optionalAttrs (cfg.hosts != { }) {
         hosts = lib.mapAttrs (_: ho: dropNulls ho) cfg.hosts;
       };

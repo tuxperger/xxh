@@ -24,10 +24,16 @@ let
     enabledPlugins = [ "syntax-highlight" ];
     cleanup = "keep";
     transport = "ssh";
+    containerRuntime = "podman";
     connectTimeoutS = 30;
+    user = "deploy";
+    identity = "/keys/id_ed25519";
     hosts.web = {
       default_shell = "fish";
       cleanup = "ephemeral";
+      user = "www";
+      identity = "/keys/web";
+      container_runtime = "docker";
     };
   };
   validToml = common.render valid;
@@ -55,10 +61,18 @@ let
     enable = true;
     hosts.web.transport = "carrier-pigeon"; # not in enum [ "russh" "ssh" ]
   };
+  badUser = mustFail "bad-user" {
+    enable = true;
+    user = 42; # not a string
+  };
+  badRuntime = mustFail "bad-runtime" {
+    enable = true;
+    containerRuntime = "containerd"; # not in enum [ "auto" "docker" "podman" ]
+  };
 in
 pkgs.runCommand "xxh-nix-module-eval-options"
   {
-    inherit badCleanup badTimeout badHostField;
+    inherit badCleanup badTimeout badHostField badUser badRuntime;
   }
   ''
     # The valid declaration rendered a canonical config file.
@@ -66,6 +80,9 @@ pkgs.runCommand "xxh-nix-module-eval-options"
     grep -q 'default_shell = "zsh"' ${validToml}
     grep -q 'cleanup = "keep"' ${validToml}
     grep -q 'transport = "ssh"' ${validToml}
-    echo "eval options: valid accepted, invalid rejected ($badCleanup/$badTimeout/$badHostField)"
+    grep -q 'runtime = "podman"' ${validToml}
+    grep -q 'user = "deploy"' ${validToml}
+    grep -q 'identity = "/keys/id_ed25519"' ${validToml}
+    echo "eval options: valid accepted, invalid rejected ($badCleanup/$badTimeout/$badHostField/$badUser/$badRuntime)"
     touch $out
   ''

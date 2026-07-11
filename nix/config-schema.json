@@ -14,6 +14,13 @@
       "default": 10,
       "minimum": 0
     },
+    "container": {
+      "description": "Container-family settings (runtime selection) — Принцип XI, one config.",
+      "$ref": "#/$defs/ContainerConfig",
+      "default": {
+        "runtime": "auto"
+      }
+    },
     "default_shell": {
       "type": "string",
       "default": "zsh"
@@ -32,9 +39,23 @@
       },
       "default": {}
     },
+    "identity": {
+      "description": "Private key (identity file) used for all hosts unless overridden.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "transport": {
       "$ref": "#/$defs/TransportBackend",
       "default": "russh"
+    },
+    "user": {
+      "description": "Login user for all hosts unless overridden (§FR-029: ssh-config remains\nthe fallback when unset).",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "$defs": {
@@ -52,6 +73,17 @@
           "const": "keep"
         }
       ]
+    },
+    "ContainerConfig": {
+      "description": "The `[container]` config section (002-container-targets, Принцип XI).",
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "description": "Runtime for `container:` targets and the `auto` probe order (default `auto`).",
+          "$ref": "#/$defs/RuntimeSetting",
+          "default": "auto"
+        }
+      }
     },
     "HostOverride": {
       "description": "Per-host overrides applied on top of the global config (§FR-023).\n\nEvery field is optional; `None` means \"inherit the global value\". List-valued\nfields (`enabled_plugins`) **replace** the global list rather than merging\n(resolves analysis finding C4 — simple, predictable precedence).",
@@ -75,6 +107,17 @@
           "format": "uint64",
           "minimum": 0
         },
+        "container_runtime": {
+          "description": "Container runtime for this target (per-target layer of C-A3 precedence);\nonly meaningful for `container:` targets, ignored for SSH.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeSetting"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "default_shell": {
           "type": [
             "string",
@@ -90,6 +133,13 @@
             "type": "string"
           }
         },
+        "identity": {
+          "description": "Private key (identity file) for this host (like ssh `-i`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "transport": {
           "anyOf": [
             {
@@ -99,8 +149,32 @@
               "type": "null"
             }
           ]
+        },
+        "user": {
+          "description": "Login user for this host (like ssh `-l`; отсутствие → ssh-config/текущий).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
+    },
+    "RuntimeSetting": {
+      "description": "Which container runtime drives `container:`-family targets, and the order for\n`auto` (002-container-targets, data-model). Distinct from [`TransportBackend`]:\nthat selects the SSH client, this selects the container runtime (C-A5).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "docker",
+            "podman"
+          ]
+        },
+        {
+          "description": "Probe docker, then podman; take the first available (C-A3).",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
     },
     "TransportBackend": {
       "description": "Which transport backend to use (Принцип III).",

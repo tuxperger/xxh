@@ -3744,6 +3744,7 @@ name = "xxh-transport"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "libc",
  "russh",
  "russh-config",
  "thiserror 2.0.18",

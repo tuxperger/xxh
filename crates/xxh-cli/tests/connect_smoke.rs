@@ -202,11 +202,17 @@ fn full_session_over_russh_leaves_host_clean() {
             cleanup: xxh_config::CleanupMode::Ephemeral,
             transport: xxh_config::TransportBackend::Russh,
             connect_timeout_s: 10,
+            user: None,
+            identity: None,
+            container_runtime: xxh_config::RuntimeSetting::Auto,
         };
         let env = vec![minimal_env_component("gz").unwrap()];
-        let mut target = ResolvedSshTarget::new("127.0.0.1");
-        target.port = Some(fx.port);
-        target.user = Some("tester".into());
+        let mut ssh = ResolvedSshTarget::new("127.0.0.1");
+        ssh.port = Some(fx.port);
+        ssh.user = Some("tester".into());
+        // Exercise the explicit-identity path (`-i`): the key is used exclusively.
+        ssh.identity = Some(fx.home.join(".ssh/id_ed25519"));
+        let target = xxh_transport::ResolvedTarget::Ssh(ssh);
 
         let mut session = Session::establish(
             RusshTransport::new(),
