@@ -86,3 +86,12 @@ xxh config show [--host <h>]   # эффективная конфигурация
 
 - Разбор аргументов и precedence — unit-тесты.
 - Коды выхода по классам ошибок — интеграционные (симуляция transport/shell/plugin сбоев).
+
+## Объявленные плагины и lock-файл (013)
+
+```
+xxh sync     # поставить объявленные [plugins.*] / [shells.*] по xxh.lock
+```
+
+Коды: `0`, `30` — какой-то из объявленных не установлен. Контракт —
+`specs/013-plugin-lock-and-declarative-sources/contracts/lock-and-sync.md`.

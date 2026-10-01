@@ -73,13 +73,13 @@
 
 ## Phase 5: Polish
 
-- [ ] T013 [P] Плагин `../xxh-plugin-neovim`: `api_version = "1.1.0"`,
+- [X] T013 [P] Плагин `../xxh-plugin-neovim`: `api_version = "1.1.0"`,
   `[builds.linux-x86_64|linux-aarch64]` (url + sha256 + strip 1 релиза v0.11.0),
   README; коммит и пуш
-- [ ] T014 [P] `README.md` (объявление, lock, `xxh sync`, модуль), CI
+- [X] T014 [P] `README.md` (объявление, lock, `xxh sync`, модуль), CI
   (`plugin_sync`), контракты 001 (cli-commands, nix-config-module)
-- [ ] T015 Прогнать `gates.sh all` и интеграцию на debian
-- [ ] T016 `**Status**: Implemented`
+- [X] T015 Прогнать `gates.sh all` и интеграцию на debian
+- [X] T016 `**Status**: Implemented`
 
 ---
 

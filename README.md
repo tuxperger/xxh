@@ -94,6 +94,7 @@ xxh config show [--host web]   # effective settings (flag > per-host > global > 
 xxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]
 xxh plugin enable|disable|update|remove <name>
 xxh plugin list [--enabled]
+xxh sync                       # install the declared plugins/shells at the locked versions
 ```
 
 ### Container targets
@@ -316,6 +317,39 @@ The flake is built **on the client**; the host still needs neither Nix nor root.
 
 [contract]: specs/001-portable-shell-over-ssh/contracts/plugin-manifest.md
 
+### Declared plugins and the lock file
+
+Plugins and shells can be declared with their sources instead of added by hand;
+`xxh sync` installs exactly that, at pinned versions:
+
+```toml
+# ~/.config/xxh/config.toml
+enabled_plugins = ["neovim", "nix-htop"]
+
+[plugins.neovim]
+source = "git@github.com:you/xxh-plugin-neovim.git"
+[plugins.nix-htop]
+source = "nixpkgs:htop"
+[shells.zsh]
+source = "git@github.com:you/xxh-shell-zsh.git"
+```
+
+```console
+$ xxh sync
+plugin neovim: installed (a2f46b6d1e9c)
+plugin nix-htop: installed (e4001ec4e696)
+shell zsh: installed (17980c9a1b2c)
+lock: written ~/.config/xxh/xxh.lock
+$ xxh sync                       # nothing to do: everything matches the lock
+```
+
+`xxh.lock` records each source's git commit and content hash; commit it with your
+config and `xxh sync` on another machine reproduces the same plugins — content
+that does not match the lock is refused. `xxh plugin update <name>` moves a plugin
+and its lock entry and says from which version and commit to which. A plugin may
+declare per-platform builds (`[builds.<os-arch>] url + sha256`, like shell
+packages) so a binary payload never has to live in git.
+
 ## Declarative configuration (Nix modules) ⭐
 
 Home-manager and NixOS modules generate the same canonical `config.toml`
@@ -325,13 +359,18 @@ Home-manager and NixOS modules generate the same canonical `config.toml`
 # flake input `xxh`
 programs.xxh = {
   enable = true;
+  package = xxh.packages.${system}.default;
   defaultShell = "zsh";
-  enabledPlugins = [ "syntax-highlight" ];
+  enabledPlugins = [ "neovim" ];
+  plugins.neovim.source = "git@github.com:you/xxh-plugin-neovim.git";
+  shells.zsh.source = "git@github.com:you/xxh-shell-zsh.git";
+  lockFile = ./xxh.lock;     # optional: pin the versions from your config repo
   hosts.web.default_shell = "fish";
 };
-# HM: imports = [ xxh.homeManagerModules.default ];
-# NixOS: imports = [ xxh.nixosModules.default ];
+# HM: imports = [ xxh.homeManagerModules.default ];   (runs `xxh sync` on activation)
+# NixOS: imports = [ xxh.nixosModules.default ];      (writes /etc/xxh/config.toml)
 ```
+
 
 A mandatory round-trip flake check (`nix flake check`) proves the module and the
 config parser cannot drift apart.

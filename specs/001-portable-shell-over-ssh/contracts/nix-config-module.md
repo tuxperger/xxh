@@ -66,3 +66,9 @@
   парсер от расхождения (SC-013).
 - **C-CM11**: `nixos-test` / HM-eval для обоих модулей прогоняются в `checks` наравне с
   прочими проверками ([nix-devenv.md](./nix-devenv.md) C-N-CI1).
+
+## Объявленные источники (013)
+
+`plugins.<имя>.source`, `shells.<имя>.source` → `[plugins.<имя>]`, `[shells.<имя>]`;
+`lockFile` → `~/.config/xxh/xxh.lock` (HM); `syncOnActivation` — `xxh sync` в
+`home.activation`, сбой — предупреждение (C-L12).
