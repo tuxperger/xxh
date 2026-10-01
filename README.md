@@ -54,7 +54,12 @@ xxh [user@]<host> [-l user] [-i ~/.ssh/key] [--shell zsh] [--keep] [--transport 
 # Running container (same flags, minus the SSH-only ones; plus --runtime)
 xxh docker:app1                 # a running docker container by name or id
 xxh podman:6f0a12               # a running podman container
-xxh container:app1 [--runtime docker|podman]   # runtime from flag/config, else auto (docker → podman)
+xxh container:app1 [--runtime docker
+# One command instead of a session (same environment, same cleanup)
+xxh <target> -- <command> [args…]   # exact arguments, no shell re-interpretation
+xxh <target> -c '<command line>'    # through your shell: pipes, redirections
+xxh <target> -t -- <command>        # with a terminal (full-screen programs)
+|podman]   # runtime from flag/config, else auto (docker → podman)
 
 xxh configxxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]                # canonical config file location
 xxh config show [--host web]   # effective settings (flag > per-host > global > default)
@@ -114,6 +119,29 @@ identity = "~/.ssh/web_key"  # private key for this host (like ssh -i, used excl
 [hosts.app1]
 container_runtime = "podman" # per-target runtime for the container reference `app1`
 ```
+
+### Running one command
+
+```console
+$ xxh prod-web-3 -- rg -c ERROR /var/log/app.log     # your tools, their machine
+$ tar c . | xxh docker:app1 -- tar x -C /tmp/drop      # stdin is the command's stdin
+$ xxh prod-web-3 -c 'ps aux | sort -rk4 | head -5' > top.txt
+```
+
+The command runs in the same delivered environment as an interactive session
+(your plugins on `PATH`) and, without `--keep`, the target is clean again when it
+returns. It is built for scripts:
+
+- stdout is the command's stdout, byte for byte; stderr stays separate. xxh's own
+  stage lines appear only with `-v`.
+- The exit code is the command's (`128 + N` if signal *N* killed it, `255` if
+  unknown). An xxh failure is always announced as `xxh: <class>: …` on stderr.
+- After `--` the arguments reach the target exactly as given — unlike `ssh`,
+  nothing is re-split or re-interpreted. Use `-c` when you *want* a shell.
+- Interrupting xxh (Ctrl-C, `SIGTERM`) stops the command on the target, waits for
+  the cleanup and exits `130`/`143`.
+- With stdin redirected xxh never prompts: needing a password or key passphrase is
+  a transport error, not a silent read of your input.
 
 Exit codes are distinguishable by error class: `10` transport, `20` shell,
 `30` plugin, `40` config.

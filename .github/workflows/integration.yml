@@ -65,6 +65,7 @@ jobs:
           cargo test -p xxh-cli
           --test bootstrap_smoke --test connect_smoke --test cache_reuse
           --test plugin_git_local --test error_classes
+          --test exec_ssh --test exec_interrupt
           -- --test-threads=1
 
       - name: Run container scenarios
@@ -72,7 +73,7 @@ jobs:
         run: >
           cargo test -p xxh-cli
           --test container_smoke --test container_clean --test container_parity
-          --test container_errors
+          --test container_errors --test exec_container
           -- --test-threads=1
 
       - name: Save base image to cache

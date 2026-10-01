@@ -484,3 +484,49 @@ pub fn make_test_flake(dir: &Path) {
     git_in(dir, &["add", "flake.lock"]);
     git_in(dir, &["commit", "-q", "-m", "test flake"]);
 }
+
+impl Fixture {
+    /// Make this host reachable by the **`xxh` binary** as `alias`: the CLI has no
+    /// port flag, so the mapped port, user and key go through `~/.ssh/config` in
+    /// the fixture `$HOME` (which the russh backend resolves natively).
+    pub fn ssh_alias(&self, alias: &str) {
+        let key = self.home.join(".ssh/id_ed25519");
+        std::fs::write(
+            self.home.join(".ssh/config"),
+            format!(
+                "Host {alias}\n  HostName 127.0.0.1\n  Port {}\n  User tester\n  IdentityFile {}\n",
+                self.port,
+                key.display()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// The `xxh` binary with `$HOME` pointed at this fixture.
+    pub fn xxh(&self, bin: &str) -> Command {
+        let mut c = Command::new(bin);
+        c.env("HOME", &self.home);
+        c
+    }
+}
+
+/// Run `cmd` to completion, feeding `stdin`, and return (exit code, stdout, stderr).
+pub fn run_with_stdin(mut cmd: Command, stdin: &[u8]) -> (Option<i32>, Vec<u8>, Vec<u8>) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn xxh");
+    let mut pipe = child.stdin.take().unwrap();
+    let data = stdin.to_vec();
+    // Feed from a thread: a large input must not deadlock against our own reads.
+    let feeder = std::thread::spawn(move || {
+        let _ = pipe.write_all(&data);
+    });
+    let out = child.wait_with_output().expect("wait xxh");
+    let _ = feeder.join();
+    (out.status.code(), out.stdout, out.stderr)
+}
