@@ -58,12 +58,12 @@
 
 ## Phase 4: Polish
 
-- [ ] T010 [P] `.github/workflows/integration.yml`, `README.md` (как проверяется
+- [X] T010 [P] `.github/workflows/integration.yml`, `README.md` (как проверяется
   сохранённое окружение), `specs/001-…/contracts/bootstrap-protocol.md` (ссылка на
   C-V*)
-- [ ] T011 Прогнать `gates.sh all` (alpine) и интеграцию на debian; замерить вход в
+- [X] T011 Прогнать `gates.sh all` (alpine) и интеграцию на debian; замерить вход в
   сохранённое окружение (SC-003) и записать в `quickstart.md`
-- [ ] T012 В `specs/014-remote-cache-integrity/spec.md` — `**Status**: Implemented`
+- [X] T012 В `specs/014-remote-cache-integrity/spec.md` — `**Status**: Implemented`
 
 ---
 

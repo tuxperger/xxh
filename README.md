@@ -40,6 +40,11 @@ $ # ~/.xxh on the host is gone
   a new host does not cost a second compression either.
 - With `--keep`, the cache survives between sessions and re-entry transfers and
   packs only what changed — typically nothing.
+- A kept environment is not trusted blindly: each login has the target describe
+  the components it needs (`find` + `sha256sum`, where present) and compares that
+  with your copy before anything is sourced. A modified or extended component is
+  named, discarded and sent again; a target that cannot check, or whose
+  environment directory others could write, gets nothing kept reused.
 
 ## Install / build
 
