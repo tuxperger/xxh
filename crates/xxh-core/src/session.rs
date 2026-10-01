@@ -266,7 +266,7 @@ impl<T: Transport> Session<T> {
             transport
                 .upload_stream(
                     &boot(&format!("recv {} {}", comp.hash, comp.fmt)),
-                    comp.payload.clone(),
+                    comp.payload()?,
                 )
                 .await?;
         }
@@ -469,7 +469,7 @@ pub fn minimal_env_component(fmt: &str) -> Result<Component, ShellError> {
         b"export XXH_SESSION=1\nalias xxh-hello='echo hello-from-xxh'\n",
     )
     .map_err(|e| ShellError::Other(e.to_string()))?;
-    let comp = Component::pack_dir(ComponentKind::Config, &dir, fmt);
+    let comp = Component::pack_dir_eager(ComponentKind::Config, &dir, fmt);
     let _ = std::fs::remove_dir_all(&dir);
     comp
 }
@@ -496,7 +496,7 @@ pub fn terminfo_component(fmt: &str) -> Option<Component> {
         "export TERMINFO_DIRS=\"$XXH_COMPONENT_DIR/terminfo:${TERMINFO_DIRS:-}\"\n",
     )
     .ok()?;
-    let comp = Component::pack_dir(ComponentKind::Config, &dir, fmt).ok();
+    let comp = Component::pack_dir_eager(ComponentKind::Config, &dir, fmt).ok();
     let _ = std::fs::remove_dir_all(&dir);
     comp
 }
@@ -556,6 +556,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockTransport {
         host_shells: Vec<&'static str>,
+        /// Component addresses the mock host reports as already cached.
+        host_cache: Vec<String>,
         commands: Arc<Mutex<Vec<String>>>,
     }
 
@@ -596,6 +598,9 @@ mod tests {
                     stdout: vec![],
                     stderr: vec![],
                 });
+            }
+            if cmd.contains("list-cache") {
+                return Ok(Self::ok(&self.host_cache.join("\n")));
             }
             Ok(Self::ok(""))
         }
@@ -888,5 +893,66 @@ mod tests {
             sent.ends_with("exec '\\''echo'\\'' '\\''it'\\''\\'\\'''\\''s'\\'''"),
             "got: {sent}"
         );
+    }
+
+    /// A component the host already holds is neither packed nor sent (023 C-A4):
+    /// its address is enough to know.
+    #[tokio::test]
+    async fn component_present_on_the_host_is_not_sent() {
+        let _env = no_shell_packages();
+        let dir = std::env::temp_dir().join(format!("xxh-present-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = "name = \"cached\"\nversion = \"1.0.0\"\napi_version = \"1.0.0\"\n";
+        std::fs::write(dir.join("plugin.toml"), text).unwrap();
+        let plugin = SessionPlugin {
+            manifest: Manifest::parse(text).unwrap(),
+            dir: dir.clone(),
+        };
+        let address = crate::deploy::tree_hash(&dir).unwrap();
+
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            host_cache: vec![address.clone()],
+            ..Default::default()
+        };
+        let log = t.commands.clone();
+        let env = vec![minimal_env_component("gz").unwrap()];
+        let s = Session::establish(
+            t,
+            &ssh_target("h"),
+            &eff("sh"),
+            &env,
+            &[plugin],
+            silent_progress(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            s.delivery_report(),
+            DeliveryReport {
+                delivered: 1,
+                reused: 1
+            },
+            "only the env component is new to this host"
+        );
+        let log = log.lock().unwrap();
+        assert!(
+            !log.iter().any(|c| c.contains(&format!("recv {address}"))),
+            "the cached component must not be re-sent: {log:?}"
+        );
+        // …but it is still wired into the session from the host cache.
+        assert!(s.prelude.contains(&address));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Generated components get the same address on every client run, so a kept
+    /// environment reuses them (023 C-A8).
+    #[test]
+    fn generated_components_have_stable_addresses() {
+        let a = minimal_env_component("gz").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let b = minimal_env_component("zst").unwrap();
+        assert_eq!(a.hash, b.hash);
     }
 }
