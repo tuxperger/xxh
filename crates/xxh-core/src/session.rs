@@ -450,28 +450,30 @@ impl<T: Transport> Session<T> {
         run_stage_hooks(&active, LifecycleStage::PostDeploy, progress).await;
 
         // 5) Assemble the prelude in delivery order: packaged shells extend PATH,
-        //    config/plugin components contribute their env.sh.
+        //    config/plugin components contribute their env.sh. A failed `.` is
+        //    fatal to a POSIX sh (dash, BusyBox: exit 2, `|| true` never runs),
+        //    so a component without env.sh is skipped, not sourced (013 found
+        //    packages without one killing every login).
+        let source = |h: &str| {
+            format!(
+                "XXH_COMPONENT_DIR={root}/cache/{h}; export XXH_COMPONENT_DIR; \
+                 if [ -f {root}/cache/{h}/env.sh ]; then . {root}/cache/{h}/env.sh; fi; ",
+                root = remote_root
+            )
+        };
         let mut prelude = String::new();
         for comp in &components {
-            match comp.kind {
+            if comp.kind == ComponentKind::Shell {
                 // Shell packages extend PATH and may ship an env.sh of their own
                 // (e.g. zsh-bin exports FPATH at its delivered functions dir).
-                ComponentKind::Shell => prelude.push_str(&format!(
-                    "export PATH=\"{root}/cache/{h}/bin:$PATH\"; \
-                     XXH_COMPONENT_DIR={root}/cache/{h}; export XXH_COMPONENT_DIR; \
-                     . {root}/cache/{h}/env.sh 2>/dev/null || true; ",
-                    root = remote_root,
+                prelude.push_str(&format!(
+                    "export PATH=\"{remote_root}/cache/{h}/bin:$PATH\"; ",
                     h = comp.hash
-                )),
-                // XXH_COMPONENT_DIR lets an env.sh reference its own cache dir
-                // (PATH for tool packages, TERMINFO/SSL_CERT_FILE for nix ones).
-                ComponentKind::Config | ComponentKind::Plugin => prelude.push_str(&format!(
-                    "XXH_COMPONENT_DIR={root}/cache/{h}; export XXH_COMPONENT_DIR; \
-                     . {root}/cache/{h}/env.sh 2>/dev/null || true; ",
-                    root = remote_root,
-                    h = comp.hash
-                )),
+                ));
             }
+            // XXH_COMPONENT_DIR lets an env.sh reference its own cache dir
+            // (PATH for tool packages, TERMINFO/SSL_CERT_FILE for nix ones).
+            prelude.push_str(&source(&comp.hash));
         }
 
         let shell_cmd = match launch {
