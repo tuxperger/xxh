@@ -222,6 +222,22 @@ pub struct PtySpec {
     pub env: BTreeMap<String, String>,
 }
 
+/// Exit code of a finished local process standing in for a remote command (C-X3):
+/// its own code, `128 + signal` when a signal ended it, `255` when unknown.
+pub(crate) fn exit_code_of(status: &std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig;
+        }
+    }
+    255
+}
+
 /// Stable internal transport interface (Принцип III).
 ///
 /// # Contract obligations (contracts/transport-trait.md + v2)
@@ -250,6 +266,18 @@ pub trait Transport: Send {
         remote_cmd: &str,
         data: Vec<u8>,
     ) -> Result<ExecOutput, TransportError>;
+
+    /// Run `cmd` without a PTY, with the **client's own** stdin/stdout/stderr
+    /// attached, and return its exit code (004, contracts/exec-transport.md):
+    /// - C-X1: stdout and stderr stay separate and byte-exact; nothing is buffered
+    ///   whole.
+    /// - C-X2: the client's stdin reaches the command, EOF included.
+    /// - C-X3: killed by signal S → `128 + S`; unknown status → `255`.
+    /// - C-X4/C-X7: the backend writes nothing of its own to stdout/stderr and
+    ///   logs neither the command line nor the streamed data.
+    /// - C-X5: dropping the future releases everything (child process, forwarder
+    ///   tasks) and leaves the transport usable for `exec`.
+    async fn exec_stream(&mut self, cmd: &str) -> Result<i32, TransportError>;
 
     /// Open an interactive PTY running the shell; returns the shell's exit status.
     async fn open_pty(&mut self, spec: &PtySpec) -> Result<i32, TransportError>;
@@ -299,5 +327,20 @@ mod tests {
         assert_eq!(container().label(), "app1");
         assert_eq!(ssh().connect_timeout_s(), 10);
         assert_eq!(container().connect_timeout_s(), 10);
+    }
+
+    #[test]
+    fn exit_codes_follow_shell_conventions() {
+        let run = |script: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .status()
+                .unwrap()
+        };
+        assert_eq!(exit_code_of(&run("exit 0")), 0);
+        assert_eq!(exit_code_of(&run("exit 7")), 7);
+        // Killed by a signal: 128 + signal number, never a silent 0 (C-X3).
+        assert_eq!(exit_code_of(&run("kill -TERM $$")), 143);
+        assert_eq!(exit_code_of(&run("kill -KILL $$")), 137);
     }
 }

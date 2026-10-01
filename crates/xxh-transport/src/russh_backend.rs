@@ -170,6 +170,56 @@ impl Transport for RusshTransport {
         collect_channel(&mut ch).await
     }
 
+    async fn exec_stream(&mut self, cmd: &str) -> Result<i32, TransportError> {
+        let handle = self.handle_mut()?;
+        let ch = handle.channel_open_session().await.map_err(te)?;
+        ch.exec(true, cmd).await.map_err(te)?;
+        let (mut read_half, write_half) = ch.split();
+
+        // Client stdin → channel; EOF on our stdin closes the command's stdin
+        // (C-X2). The guard stops the forwarder if this future is dropped (C-X5).
+        let mut writer = write_half.make_writer();
+        let stdin_task = AbortOnDrop(tokio::spawn(async move {
+            let mut stdin = tokio::io::stdin();
+            let mut buf = [0u8; 8192];
+            loop {
+                match stdin.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if writer.write_all(&buf[..n]).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = writer.shutdown().await;
+        }));
+
+        let mut stdout = tokio::io::stdout();
+        let mut stderr = tokio::io::stderr();
+        let mut code = None;
+        while let Some(msg) = read_half.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => {
+                    stdout.write_all(&data).await?;
+                    stdout.flush().await?;
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    stderr.write_all(&data).await?;
+                    stderr.flush().await?;
+                }
+                ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status as i32),
+                ChannelMsg::ExitSignal { signal_name, .. } => {
+                    code = Some(128 + signal_number(&signal_name));
+                }
+                _ => {}
+            }
+        }
+        drop(stdin_task);
+        // No status at all (connection lost mid-command) is "unknown" (C-X3).
+        Ok(code.unwrap_or(255))
+    }
+
     async fn open_pty(&mut self, spec: &PtySpec) -> Result<i32, TransportError> {
         let handle = self.handle_mut()?;
         let ch = handle.channel_open_session().await.map_err(te)?;
@@ -268,6 +318,35 @@ impl Transport for RusshTransport {
     }
 }
 
+/// Aborts the wrapped task when dropped, so a cancelled `exec_stream` never
+/// leaves a forwarder reading the client's stdin.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// POSIX number of the signal an SSH `exit-signal` names (0 when unknown).
+fn signal_number(sig: &russh::Sig) -> i32 {
+    match sig {
+        russh::Sig::HUP => 1,
+        russh::Sig::INT => 2,
+        russh::Sig::QUIT => 3,
+        russh::Sig::ILL => 4,
+        russh::Sig::ABRT => 6,
+        russh::Sig::FPE => 8,
+        russh::Sig::KILL => 9,
+        russh::Sig::USR1 => 10,
+        russh::Sig::SEGV => 11,
+        russh::Sig::PIPE => 13,
+        russh::Sig::ALRM => 14,
+        russh::Sig::TERM => 15,
+        _ => 0,
+    }
+}
+
 /// Collect stdout/stderr/exit-code from a session channel until it closes.
 async fn collect_channel(
     ch: &mut russh::Channel<client::Msg>,
@@ -330,6 +409,17 @@ async fn interactive_auth(
 /// Read a secret from the terminal. (Echo suppression is a refinement; the value is
 /// never logged regardless.)
 fn read_secret(prompt: &str) -> Result<String, TransportError> {
+    // A prompt needs a terminal. With stdin redirected (a pipeline, a script, the
+    // one-command mode) the "answer" would be the command's own input — refuse
+    // instead of reading it (004 §FR-009, C-XC6).
+    if !crate::tty::stdin_is_tty() {
+        return Err(TransportError::Auth(format!(
+            "interactive authentication is needed ({}) but stdin is not a terminal; \
+             use an unencrypted key, ssh-agent via `--transport ssh`, or run xxh from \
+             a terminal",
+            prompt.trim().trim_end_matches(':')
+        )));
+    }
     use std::io::Write;
     eprint!("{prompt}");
     std::io::stderr().flush().ok();

@@ -88,6 +88,35 @@ enum ShellLaunch {
     HostBinary(String),
 }
 
+/// What a one-command run executes on the target (004, data-model.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecCommand {
+    /// An exact argument list: reaches the target unchanged, never re-interpreted
+    /// by a shell (004 §FR-006).
+    Argv(Vec<String>),
+    /// A command line for the session's shell — pipelines, redirections, aliases
+    /// (004 §FR-011).
+    ShellLine(String),
+}
+
+/// Single-quote `s` for a POSIX shell: the only way a value survives every
+/// metacharacter, whitespace and newline unchanged.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The command line that follows `exec` on the target for `cmd`.
+fn exec_line(cmd: &ExecCommand, shell_cmd: &str) -> String {
+    match cmd {
+        ExecCommand::Argv(args) => args
+            .iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" "),
+        ExecCommand::ShellLine(line) => format!("{shell_cmd} -c {}", sh_quote(line)),
+    }
+}
+
 /// A connected, prepared session ready to launch a shell.
 pub struct Session<T: Transport> {
     transport: T,
@@ -300,15 +329,22 @@ impl<T: Transport> Session<T> {
 
     /// Build the remote command that sources the prelude then execs `shell_cmd`.
     fn shell_invocation(&self, shell_cmd: &str) -> String {
+        self.invocation("", shell_cmd)
+    }
+
+    /// [`shell_invocation`](Self::shell_invocation) with `before_exec` — shell text
+    /// run after the prelude and right before the `exec`.
+    fn invocation(&self, before_exec: &str, shell_cmd: &str) -> String {
         let keep = if self.keep { "1" } else { "0" };
         // bootstrap `run` installs the cleanup trap, then execs the given argv.
         // XXH_ROOT is pinned so the script targets exactly the resolved root.
         // Set via `env`, not a bare assignment prefix: PTY transports prepend
         // `exec`, which would treat `XXH_ROOT=…` as the command name.
         format!(
-            "env XXH_ROOT={root} sh {root}/boot.sh run {} {keep} sh -c '{}exec {}'",
+            "env XXH_ROOT={root} sh {root}/boot.sh run {} {keep} sh -c '{}{}exec {}'",
             self.session_id,
             self.prelude.replace('\'', "'\\''"),
+            before_exec.replace('\'', "'\\''"),
             shell_cmd.replace('\'', "'\\''"),
             root = self.remote_root,
         )
@@ -332,6 +368,63 @@ impl<T: Transport> Session<T> {
         let cmd = self.shell_invocation(shell_cmd);
         let out = self.transport.exec(&cmd).await?;
         Ok(out.exit_code)
+    }
+
+    /// Run one command in the prepared environment with the client's stdio
+    /// attached and return its exit code (004, contracts/exec-transport.md
+    /// C-X8..C-X11). Same prelude and same cleanup trap as the interactive shell.
+    ///
+    /// The command's pid is recorded on the target so that, if this client is
+    /// interrupted (SIGINT/SIGTERM), the command is stopped there and the cleanup
+    /// trap gets to run before we return `128 + signal` — whatever the transport,
+    /// since neither a PTY-less SSH channel nor `docker exec -i` forwards signals.
+    pub async fn run_exec(&mut self, cmd: &ExecCommand, tty: bool) -> Result<i32, SessionError> {
+        let sessions = format!("{}/sessions", self.remote_root);
+        let cmd_marker = format!("{sessions}/{}.cmd", self.session_id);
+        // `$$` of the inner shell is the command's own pid once it `exec`s.
+        let invocation = self.invocation(
+            &format!("echo $$ >{cmd_marker}; "),
+            &exec_line(cmd, &self.shell_cmd),
+        );
+
+        if tty {
+            // A terminal was asked for: signals travel through it as keystrokes.
+            let spec = xxh_transport::PtySpec {
+                term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
+                cols: 80,
+                rows: 24,
+                shell_cmd: invocation,
+                env: Default::default(),
+            };
+            return Ok(self.transport.open_pty(&spec).await?);
+        }
+
+        use tokio::signal::unix::{SignalKind, signal};
+        let io = |e: std::io::Error| SessionError::Transport(e.into());
+        let mut interrupt = signal(SignalKind::interrupt()).map_err(io)?;
+        let mut terminate = signal(SignalKind::terminate()).map_err(io)?;
+        let signo = tokio::select! {
+            code = self.transport.exec_stream(&invocation) => return Ok(code?),
+            _ = interrupt.recv() => 2,
+            _ = terminate.recv() => 15,
+        };
+
+        // The stream is cancelled; stop the command and give the remote trap up to
+        // five seconds to finish cleaning (it removes the session marker last).
+        // Where /proc tells us the command's process group, the whole group is
+        // signalled so that children of a `-c` command line die too; otherwise only
+        // the command itself.
+        let stop = format!(
+            "p=$(cat {cmd_marker} 2>/dev/null) || exit 0; g=; \
+             [ -r \"/proc/$p/stat\" ] && read -r _ _ _ _ g _ <\"/proc/$p/stat\"; \
+             case \"$g\" in ''|0|1|*[!0-9]*) kill -TERM \"$p\" 2>/dev/null;; \
+             *) kill -TERM -- \"-$g\" 2>/dev/null || kill -TERM \"$p\" 2>/dev/null;; esac; \
+             i=0; while [ -e {sessions}/{sid} ] && [ \"$i\" -lt 50 ]; do \
+             sleep 0.1 2>/dev/null || sleep 1; i=$((i+1)); done",
+            sid = self.session_id
+        );
+        let _ = self.transport.exec(&stop).await;
+        Ok(128 + signo)
     }
 
     /// Close the transport. Host cleanup is guaranteed by the remote trap during
@@ -520,6 +613,10 @@ mod tests {
             }
             Ok(Self::ok(""))
         }
+        async fn exec_stream(&mut self, cmd: &str) -> Result<i32, TransportError> {
+            self.commands.lock().unwrap().push(cmd.to_string());
+            Ok(7)
+        }
         async fn open_pty(&mut self, _spec: &PtySpec) -> Result<i32, TransportError> {
             Ok(0)
         }
@@ -691,5 +788,105 @@ mod tests {
         );
         assert!(!said.iter().any(|l| l.contains("plugin native: skipped")));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn argv_reaches_the_target_exactly() {
+        let argv = |a: &[&str]| ExecCommand::Argv(a.iter().map(|s| s.to_string()).collect());
+        assert_eq!(exec_line(&argv(&["ls", "-la"]), "zsh"), "'ls' '-la'");
+        // Whitespace, both quote kinds, `$`, `;`, newlines and empty arguments all
+        // survive as data, never as shell syntax (004 §FR-006).
+        assert_eq!(
+            exec_line(
+                &argv(&["printf", "%s\n", "a b", "c'd", "\"e\"", "$HOME;x", ""]),
+                "zsh"
+            ),
+            "'printf' '%s\n' 'a b' 'c'\\''d' '\"e\"' '$HOME;x' ''"
+        );
+        // A command line goes to the session's shell as one quoted argument.
+        assert_eq!(
+            exec_line(
+                &ExecCommand::ShellLine("echo 'a' | wc -c".into()),
+                "/r/bin/zsh"
+            ),
+            "/r/bin/zsh -c 'echo '\\''a'\\'' | wc -c'"
+        );
+    }
+
+    /// What `sh` makes of an [`exec_line`]: the round trip through a real shell is
+    /// the actual contract.
+    #[test]
+    fn quoting_roundtrips_through_a_real_shell() {
+        let args = [
+            "a b",
+            "c'd",
+            "\"e\"",
+            "$HOME;x",
+            "",
+            "tab\there",
+            "nl\nx",
+            "*",
+        ];
+        let line = exec_line(
+            &ExecCommand::Argv(
+                std::iter::once("printf")
+                    .chain(std::iter::once("[%s]"))
+                    .chain(args)
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            "sh",
+        );
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("exec {line}")])
+            .output()
+            .unwrap();
+        let expected: String = args
+            .iter()
+            .map(|a| format!("[{a}]"))
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    }
+
+    #[tokio::test]
+    async fn run_exec_streams_the_command_under_the_cleanup_trap() {
+        let _env = no_shell_packages();
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            ..Default::default()
+        };
+        let log = t.commands.clone();
+        let env = vec![minimal_env_component("gz").unwrap()];
+        let mut s = Session::establish(
+            t,
+            &ssh_target("h"),
+            &eff("sh"),
+            &env,
+            &[],
+            silent_progress(),
+        )
+        .await
+        .unwrap();
+
+        let cmd = ExecCommand::Argv(vec!["echo".into(), "it's".into()]);
+        // The transport's exit code is the session's (004 §FR-004).
+        assert_eq!(s.run_exec(&cmd, false).await.unwrap(), 7);
+
+        let log = log.lock().unwrap();
+        let sent = log.last().unwrap();
+        // Same bootstrap `run` (cleanup trap) as the interactive shell (C-X8)…
+        assert!(sent.contains("/boot.sh run "), "got: {sent}");
+        // …with the command's pid recorded right before the exec (C-X9)…
+        let marker = format!(
+            "echo $$ >/home/mock/.xxh/sessions/{}.cmd; exec ",
+            s.session_id
+        );
+        assert!(sent.contains(&marker), "got: {sent}");
+        // …and the argv quoted twice: once for the command, once for `sh -c '…'`.
+        assert!(
+            sent.ends_with("exec '\\''echo'\\'' '\\''it'\\''\\'\\'''\\''s'\\'''"),
+            "got: {sent}"
+        );
     }
 }

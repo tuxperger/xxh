@@ -153,6 +153,16 @@ impl Transport for SshCliTransport {
         })
     }
 
+    async fn exec_stream(&mut self, cmd: &str) -> Result<i32, TransportError> {
+        // `-T`: no remote PTY, so the streams stay separate and byte-exact. stdio is
+        // inherited — the command talks to the client's descriptors directly (C-X1).
+        let mut c = self.cmd();
+        c.arg("-T").arg(&self.alias).arg("--").arg(cmd);
+        c.kill_on_drop(true);
+        let status = c.status().await?;
+        Ok(crate::exit_code_of(&status))
+    }
+
     async fn open_pty(&mut self, spec: &PtySpec) -> Result<i32, TransportError> {
         // Prefix env exports so the remote shell init sees them (used by ⭐ nix
         // runtime-data vars later). `-tt` forces a PTY; stdio inherited for interaction.

@@ -266,6 +266,16 @@ impl Transport for ContainerCliTransport {
         })
     }
 
+    async fn exec_stream(&mut self, cmd: &str) -> Result<i32, TransportError> {
+        // `-i` without `-t`: stdin is forwarded, no TTY is allocated, the streams
+        // stay separate; stdio is inherited from the client (C-X1/C-X2).
+        let mut c = self.exec_cmd(true, false)?;
+        c.arg(&self.reference).args(["sh", "-c", cmd]);
+        c.kill_on_drop(true);
+        let status = c.status().await?;
+        Ok(crate::exit_code_of(&status))
+    }
+
     async fn open_pty(&mut self, spec: &PtySpec) -> Result<i32, TransportError> {
         // Local PTY pair; `exec -it` sits on the slave, we proxy stdio through the
         // master (R5/C-C8). The CLI translates resizes of its tty into the exec

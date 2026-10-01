@@ -2,12 +2,21 @@
 //! (russh channel PTY, container exec PTY): raw mode with guaranteed restore and
 //! window-size queries for SIGWINCH propagation.
 
+/// Whether the client's stdin is a terminal (prompts and raw mode need one).
+pub(crate) fn stdin_is_tty() -> bool {
+    // SAFETY: isatty only inspects the descriptor.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::isatty(libc::STDIN_FILENO) == 1
+    }
+}
+
 /// Local terminal dimensions, `None` when stdin is not a tty (e.g. piped input).
 pub(crate) fn local_tty_size() -> Option<(u16, u16)> {
     // SAFETY: read-only ioctl on fd 0 into a zeroed winsize struct.
     #[allow(unsafe_code)]
     unsafe {
-        if libc::isatty(libc::STDIN_FILENO) != 1 {
+        if !stdin_is_tty() {
             return None;
         }
         let mut ws: libc::winsize = std::mem::zeroed();
@@ -32,7 +41,7 @@ impl RawModeGuard {
         // SAFETY: standard tcgetattr/cfmakeraw/tcsetattr sequence on fd 0.
         #[allow(unsafe_code)]
         unsafe {
-            if libc::isatty(libc::STDIN_FILENO) != 1 {
+            if !stdin_is_tty() {
                 return None;
             }
             let mut t: libc::termios = std::mem::zeroed();

@@ -13,6 +13,8 @@
 #   recv <hash> <fmt>      -> receive a component archive on stdin into cache/<hash>
 #   run <session-id> <fmt> <keep> <shell-cmd...>
 #                          -> assemble env, install EXIT trap, launch the shell
+#                             (a one-command run records the command's pid in
+#                             sessions/<session-id>.cmd so the client can stop it)
 #   reconcile              -> remove stale sessions/artifacts from crashed runs
 #
 # Exit status is deliberately coarse; the client maps richer error classes.
@@ -63,6 +65,8 @@ xxh_cleanup() {
     _keep="${1:-0}"
     _sid="${2:-}"
     [ -n "$_sid" ] && rm -rf "$SESS_DIR/$_sid" 2>/dev/null || true
+    # One-command runs also leave the command's pid next to the marker (004 C-X9).
+    [ -n "$_sid" ] && rm -f "$SESS_DIR/$_sid.cmd" 2>/dev/null || true
     if [ "$_keep" = "1" ]; then
         # Keep mode: retain the content-addressed cache for faster re-entry,
         # drop only per-session state.
