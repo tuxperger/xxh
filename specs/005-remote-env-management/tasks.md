@@ -62,15 +62,15 @@ US1 — `clean` (P1), US2 — `status` (P2).
 
 **Independent Test**: войти с `--keep`, выйти, `xxh clean` — каталога окружения нет.
 
-- [ ] T009 [US1] В `crates/xxh-cli/src/main.rs` добавить подкоманду
+- [X] T009 [US1] В `crates/xxh-cli/src/main.rs` добавить подкоманду
   `Clean { target, --force, --stale }`, класс `target` с `exit::TARGET = 50`,
   проверки флагов цели как у входа; в `crates/xxh-cli/src/commands/remote_env.rs`
   реализовать `clean`: полная очистка (C-C1, C-C2, C-C4) и `--stale` через
   `plan_components` (C-C3); вывод удалённого и освобождённого объёма
-- [ ] T010 [P] [US1] Unit-тесты в `crates/xxh-cli/src/main.rs`: разбор
+- [X] T010 [P] [US1] Unit-тесты в `crates/xxh-cli/src/main.rs`: разбор
   `xxh clean web --force --stale`, `xxh clean` без цели — ошибка использования;
   рендер `CleanOutcome` в `commands/remote_env.rs`
-- [ ] T011 [US1] Интеграция `crates/xxh-cli/tests/remote_env_ssh.rs` (SSH, один
+- [X] T011 [US1] Интеграция `crates/xxh-cli/tests/remote_env_ssh.rs` (SSH, один
   `#[test]`): `--keep`-вход → `clean` удаляет, повторный `clean` — «нечего»; активная
   `--keep`-сессия (окружение собрано, `run` с `sleep`) → `clean` без `force`
   отказывает и ничего не удаляет, с `force` — удаляет; `--keep` с плагином →
@@ -78,7 +78,7 @@ US1 — `clean` (P1), US2 — `status` (P2).
   `delivered == 0`; след сбоя (мёртвый маркер) удаляется без `force`; каталог без
   права записи внутри `cache/` → `left`, ошибка (FR-005), после `chmod` — удаляется;
   итог — `cleanliness() == "CLEAN"`
-- [ ] T012 [US1] Интеграция `crates/xxh-cli/tests/remote_env_container.rs`
+- [X] T012 [US1] Интеграция `crates/xxh-cli/tests/remote_env_container.rs`
   (контейнер): `--keep`-вход → `inspect` видит окружение → `clean` → чисто, образ не
   изменён (`diff_clean`, `image_digest_unchanged`)
 
@@ -92,17 +92,17 @@ US1 — `clean` (P1), US2 — `status` (P2).
 **Independent Test**: после `--keep` `status` показывает окружение; на чистой цели —
 «ничего нет», цель остаётся чистой.
 
-- [ ] T013 [US2] В `crates/xxh-cli/src/main.rs` добавить подкоманду
+- [X] T013 [US2] В `crates/xxh-cli/src/main.rs` добавить подкоманду
   `Status { target, --json }`; в `commands/remote_env.rs` — `status`: `inspect`,
   план (`detect` потоком + `plan_components`; сбой плана → предупреждение и `unknown`,
   C-S4), человекочитаемый вывод (C-S2, относительное время) и JSON (C-S3)
-- [ ] T014 [P] [US2] Unit-тесты рендера в `crates/xxh-cli/src/commands/remote_env.rs`:
+- [X] T014 [P] [US2] Unit-тесты рендера в `crates/xxh-cli/src/commands/remote_env.rs`:
   пустая цель, kept-окружение с current/stale, неизвестные время и объём,
   JSON-схема C-S3 (поля и типы)
-- [ ] T015 [US2] Дополнить `crates/xxh-cli/tests/remote_env_ssh.rs`: `inspect` на
+- [X] T015 [US2] Дополнить `crates/xxh-cli/tests/remote_env_ssh.rs`: `inspect` на
   чистой цели — пусто и цель `CLEAN` (SC-003); после `--keep`-входа — один каталог,
   `kept`, `last_used` в пределах минуты от часов клиента, компоненты `current`
-- [ ] T016 [US2] Интеграция бинаря `crates/xxh-cli/tests/remote_env_cli.rs`:
+- [X] T016 [US2] Интеграция бинаря `crates/xxh-cli/tests/remote_env_cli.rs`:
   `xxh status docker:<c>` на чистом контейнере — код 0, «nothing from xxh», контейнер
   чист; `xxh <c> --keep -- true`, `xxh status --json` — валидный JSON с одним
   окружением; `xxh clean` — код 0; недоступный контейнер — код 10

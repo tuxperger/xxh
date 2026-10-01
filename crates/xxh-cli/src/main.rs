@@ -10,6 +10,8 @@ mod target;
 
 use std::process::ExitCode;
 
+use tokio::runtime::Runtime;
+
 use clap::{Parser, Subcommand};
 use commands::config::ConfigAction;
 use commands::plugin::{PluginAction, PluginCmdError};
@@ -26,6 +28,8 @@ mod exit {
     pub const SHELL: u8 = 20;
     pub const PLUGIN: u8 = 30;
     pub const CONFIG: u8 = 40;
+    /// `xxh clean` refused (live sessions) or left something behind (005 C-C2/C-C4).
+    pub const TARGET: u8 = 50;
     pub const USAGE: u8 = 2;
 }
 
@@ -123,6 +127,25 @@ enum Command {
     Plugin {
         #[command(subcommand)]
         action: PluginAction,
+    },
+    /// Show what xxh left on a target: kept environment, sessions, components.
+    Status {
+        /// Target, as for a login.
+        target: String,
+        /// Print one JSON object instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove what xxh left on a target.
+    Clean {
+        /// Target, as for a login.
+        target: String,
+        /// Remove even while a session on the target is still running.
+        #[arg(long)]
+        force: bool,
+        /// Remove only components the current environment no longer uses.
+        #[arg(long)]
+        stale: bool,
     },
 }
 
@@ -246,6 +269,12 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
                 Err(PluginCmdError::Config(e)) => report("config", &e, exit::CONFIG),
             }
         }
+        Some(Command::Status { target, json }) => run_status(target, *json, cli),
+        Some(Command::Clean {
+            target,
+            force,
+            stale,
+        }) => run_clean(target, *force, *stale, cli),
         None => match &cli.host {
             Some(host) => run_connect(host, cli, exec),
             None => {
@@ -256,36 +285,95 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
     }
 }
 
-fn run_connect(raw_target: &str, cli: &Cli, exec: Option<ExecRequest>) -> u8 {
-    let cfg = match commands::config::load() {
-        Ok(c) => c,
-        Err(e) => return report("config", &e, exit::CONFIG),
-    };
+/// Everything a command needs before touching the network: the effective
+/// settings, the resolved target and a runtime. Login, `status` and `clean`
+/// share it, so a target means the same thing to all three (005 §FR-003). On
+/// failure the error is already reported and the exit code is returned.
+fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Runtime), u8> {
+    let cfg = commands::config::load().map_err(|e| report("config", &e, exit::CONFIG))?;
 
     // Parse the target family first (pure grammar), then reject flags that do not
     // apply to that family before touching the network (C-A2/C-A5).
-    let parsed = match target::parse(raw_target) {
-        Ok(p) => p,
-        Err(e) => return report("config", &e, exit::CONFIG),
-    };
+    let parsed = target::parse(raw_target).map_err(|e| report("config", &e, exit::CONFIG))?;
     let flags = CliTargetFlags {
         identity_set: cli.identity.is_some(),
         transport_set: cli.transport.is_some(),
         runtime_set: cli.runtime.is_some(),
     };
-    if let Err(e) = target::validate_flags(&parsed, &flags) {
-        return report("config", &e, exit::CONFIG);
-    }
+    target::validate_flags(&parsed, &flags).map_err(|e| report("config", &e, exit::CONFIG))?;
 
     // Resolve effective settings against the right alias, then build the target.
-    let (eff, resolved) = match resolve_target(&cfg, cli, parsed) {
-        Ok(pair) => pair,
-        Err(e) => return report("config", &e, exit::CONFIG),
-    };
+    let (eff, resolved) =
+        resolve_target(&cfg, cli, parsed).map_err(|e| report("config", &e, exit::CONFIG))?;
+    let rt = Runtime::new().map_err(|e| report("transport", &e, exit::TRANSPORT))?;
+    Ok((eff, resolved, rt))
+}
 
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return report("transport", &e, exit::TRANSPORT),
+/// Unix seconds now, for "last used … ago".
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn run_status(raw_target: &str, json: bool, cli: &Cli) -> u8 {
+    let (eff, resolved, rt) = match prepare(raw_target, cli) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let label = resolved.label().to_string();
+    // Stages only on request: stdout is the report (and maybe JSON for a script).
+    let progress = commands::connect::progress(verbosity(cli) == Verbosity::Normal);
+    match rt.block_on(commands::remote_env::status(resolved, &eff, progress)) {
+        Ok(r) if json => {
+            println!("{}", commands::remote_env::status_json(&label, &r));
+            exit::OK
+        }
+        Ok(r) => {
+            print!(
+                "{}",
+                commands::remote_env::render_status(&label, &r, unix_now())
+            );
+            exit::OK
+        }
+        Err(e) => {
+            let (class, code) = classify(&e);
+            report(class, &e, code)
+        }
+    }
+}
+
+fn run_clean(raw_target: &str, force: bool, stale: bool, cli: &Cli) -> u8 {
+    let (eff, resolved, rt) = match prepare(raw_target, cli) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let label = resolved.label().to_string();
+    let progress = commands::connect::progress(verbosity(cli) == Verbosity::Normal);
+    match rt.block_on(commands::remote_env::clean(
+        resolved, &eff, force, stale, progress,
+    )) {
+        Ok(outcome) => {
+            print!(
+                "{}",
+                commands::remote_env::render_clean(&label, &outcome, stale)
+            );
+            match commands::remote_env::clean_problem(&label, &outcome) {
+                Some(msg) => report("target", &msg, exit::TARGET),
+                None => exit::OK,
+            }
+        }
+        Err(e) => {
+            let (class, code) = classify(&e);
+            report(class, &e, code)
+        }
+    }
+}
+
+fn run_connect(raw_target: &str, cli: &Cli, exec: Option<ExecRequest>) -> u8 {
+    let (eff, resolved, rt) = match prepare(raw_target, cli) {
+        Ok(p) => p,
+        Err(code) => return code,
     };
     // Stage progress would pollute a script's stderr: a one-command run shows it
     // only when asked for (004 §FR-012).
@@ -422,5 +510,31 @@ mod tests {
         // Degenerate forms stay untouched — let ssh resolution reject them.
         assert_eq!(split_user_host("@web"), (None, "@web"));
         assert_eq!(split_user_host("deploy@"), (None, "deploy@"));
+    }
+
+    /// `status`/`clean` are subcommands with their own target, not a login to a
+    /// host named "status" (005 T010).
+    #[test]
+    fn maintenance_subcommands_parse() {
+        let cli = Cli::try_parse_from(["xxh", "clean", "web", "--force", "--stale"]).unwrap();
+        assert!(cli.host.is_none());
+        assert!(matches!(
+            cli.command,
+            Some(Command::Clean { ref target, force: true, stale: true }) if target == "web"
+        ));
+        let cli = Cli::try_parse_from(["xxh", "status", "docker:c", "--json", "-v"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Status { ref target, json: true }) if target == "docker:c"
+        ));
+        assert_eq!(cli.verbose, 1, "global flags still apply");
+        // A target is mandatory.
+        assert!(Cli::try_parse_from(["xxh", "clean"]).is_err());
+        assert!(Cli::try_parse_from(["xxh", "status"]).is_err());
+        // Running a command is a login thing, not a maintenance one.
+        assert!(
+            request(&["xxh", "-c", "x", "status", "web"], false).is_err(),
+            "with a subcommand"
+        );
     }
 }
