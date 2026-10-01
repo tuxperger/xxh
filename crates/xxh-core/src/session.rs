@@ -458,11 +458,21 @@ fn session_id() -> String {
     format!("s{n:x}")
 }
 
+/// A fresh temporary directory path, unique per call: generated components are
+/// built concurrently (tests, several targets), and a shared per-process name lets
+/// one call delete the tree another is still hashing.
+fn scratch_dir(prefix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()))
+}
+
 /// Build a minimal environment component that marks the xxh session and adds a demo
 /// alias, proving config delivery end-to-end. Real dotfiles/plugins/shell packages
 /// extend this set (T020, US4).
 pub fn minimal_env_component(fmt: &str) -> Result<Component, ShellError> {
-    let dir = std::env::temp_dir().join(format!("xxh-env-{}", std::process::id()));
+    let dir = scratch_dir("xxh-env");
     std::fs::create_dir_all(&dir).map_err(|e| ShellError::Other(e.to_string()))?;
     std::fs::write(
         dir.join("env.sh"),
@@ -486,7 +496,7 @@ pub fn terminfo_component(fmt: &str) -> Option<Component> {
     let src = find_local_terminfo(&term)?;
     let first = term.chars().next()?;
 
-    let dir = std::env::temp_dir().join(format!("xxh-ti-{}", std::process::id()));
+    let dir = scratch_dir("xxh-ti");
     let entry_dir = dir.join("terminfo").join(first.to_string());
     std::fs::create_dir_all(&entry_dir).ok()?;
     std::fs::copy(&src, entry_dir.join(&term)).ok()?;

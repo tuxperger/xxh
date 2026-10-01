@@ -250,7 +250,10 @@ fn cache_read(cache: &Path, hash: &str, fmt: &str) -> Option<Vec<u8>> {
 fn cache_write(cache: &Path, hash: &str, fmt: &str, archive: &[u8]) {
     let write = || -> std::io::Result<()> {
         std::fs::create_dir_all(cache)?;
-        let tmp = cache.join(format!(".tmp-{hash}.{fmt}.{}", std::process::id()));
+        // Unique per write, so concurrent writers never share a temp file.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = cache.join(format!(".tmp-{hash}.{fmt}.{}-{n}", std::process::id()));
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(blake3::hash(archive).as_bytes())?;
         f.write_all(archive)?;
