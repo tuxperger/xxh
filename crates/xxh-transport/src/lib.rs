@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 mod container_backend;
 mod russh_backend;
 mod ssh_cli_backend;
+pub mod ssh_config_extra;
 mod tty;
 pub use container_backend::{ContainerCliTransport, resolve_runtime};
 pub use russh_backend::RusshTransport;
@@ -60,6 +61,9 @@ pub struct ResolvedSshTarget {
     pub identity: Option<std::path::PathBuf>,
     /// Connect timeout in seconds (§FR-031).
     pub connect_timeout_s: u64,
+    /// Forward the agent into the user's shell or command: `Some(true)` from
+    /// `-A`; `None` leaves it to `ForwardAgent` in ssh_config (012 C-J9).
+    pub forward_agent: Option<bool>,
 }
 
 impl ResolvedSshTarget {
@@ -71,6 +75,7 @@ impl ResolvedSshTarget {
             port: None,
             identity: None,
             connect_timeout_s: 10,
+            forward_agent: None,
         }
     }
 }

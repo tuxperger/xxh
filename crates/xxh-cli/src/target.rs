@@ -162,6 +162,8 @@ pub fn resolve_runtime_selector(
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CliTargetFlags {
     pub identity_set: bool,
+    /// `-A`: agent forwarding exists only over SSH (012 C-J11).
+    pub forward_agent_set: bool,
     pub transport_set: bool,
     pub runtime_set: bool,
 }
@@ -178,6 +180,11 @@ pub fn validate_flags(target: &ParsedTarget, flags: &CliTargetFlags) -> Result<(
         ParsedTarget::Container { .. } => {
             if flags.identity_set {
                 return Err(TargetError::SshOnlyFlag { flag: "--identity" });
+            }
+            if flags.forward_agent_set {
+                return Err(TargetError::SshOnlyFlag {
+                    flag: "--forward-agent",
+                });
             }
             if flags.transport_set {
                 return Err(TargetError::SshOnlyFlag {

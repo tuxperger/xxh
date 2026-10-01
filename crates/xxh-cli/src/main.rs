@@ -75,6 +75,11 @@ struct Cli {
     #[arg(long, global = true)]
     keep: bool,
 
+    /// Forward your ssh-agent into the session's shell or command (SSH targets
+    /// only; off unless asked here or by ForwardAgent in ~/.ssh/config).
+    #[arg(short = 'A', long, global = true)]
+    forward_agent: bool,
+
     /// Transport backend (SSH targets only).
     #[arg(long, global = true, value_parser = ["russh", "ssh"])]
     transport: Option<String>,
@@ -324,6 +329,7 @@ fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Ru
     let parsed = target::parse(raw_target).map_err(|e| report("config", &e, exit::CONFIG))?;
     let flags = CliTargetFlags {
         identity_set: cli.identity.is_some(),
+        forward_agent_set: cli.forward_agent,
         transport_set: cli.transport.is_some(),
         runtime_set: cli.runtime.is_some(),
     };
@@ -411,6 +417,7 @@ fn run_doctor(raw_target: Option<&str>, json: bool, cli: &Cli) -> u8 {
             };
             let flags = CliTargetFlags {
                 identity_set: cli.identity.is_some(),
+                forward_agent_set: cli.forward_agent,
                 transport_set: cli.transport.is_some(),
                 runtime_set: cli.runtime.is_some(),
             };
@@ -510,6 +517,8 @@ fn resolve_target(
             ssh.connect_timeout_s = eff.connect_timeout_s;
             ssh.user = eff.user.clone();
             ssh.identity = eff.identity.clone();
+            // `-A` forces forwarding; otherwise ssh_config ForwardAgent decides.
+            ssh.forward_agent = cli.forward_agent.then_some(true);
             Ok((eff, ResolvedTarget::Ssh(ssh)))
         }
         ParsedTarget::Container { scheme, reference } => {
@@ -650,5 +659,23 @@ mod tests {
             cli.command,
             Some(Command::Doctor { target: Some(ref t), json: true }) if t == "web"
         ));
+    }
+
+    /// `-A` asks for agent forwarding; containers refuse it before connecting
+    /// (012 T012, C-J11).
+    #[test]
+    fn forward_agent_flag() {
+        let cli = Cli::try_parse_from(["xxh", "-A", "web", "--", "true"]).unwrap();
+        assert!(cli.forward_agent);
+        let cli = Cli::try_parse_from(["xxh", "web"]).unwrap();
+        assert!(!cli.forward_agent);
+        let ctr = target::parse("docker:app").unwrap();
+        let flags = CliTargetFlags {
+            forward_agent_set: true,
+            ..Default::default()
+        };
+        assert!(target::validate_flags(&ctr, &flags).is_err());
+        let ssh = target::parse("web").unwrap();
+        assert!(target::validate_flags(&ssh, &flags).is_ok());
     }
 }

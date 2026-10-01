@@ -95,6 +95,10 @@ impl Transport for SshCliTransport {
             base.push("-p".into());
             base.push(p.to_string());
         }
+        // `-A` only when asked; otherwise ssh's own ForwardAgent decides (012 C-J9).
+        if target.forward_agent == Some(true) {
+            base.push("-A".into());
+        }
         self.base_args = base;
         self.ctl_dir = Some(ctl_dir);
 

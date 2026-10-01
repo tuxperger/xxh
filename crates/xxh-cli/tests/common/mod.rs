@@ -88,6 +88,8 @@ pub struct Fixture {
     name: String,
     pub home: PathBuf,
     pub port: u16,
+    /// The image this fixture built — reused for containers behind it (012).
+    tag: String,
 }
 
 impl Fixture {
@@ -187,7 +189,12 @@ impl Fixture {
             std::env::set_var("HOME", &home);
         }
 
-        let fx = Fixture { name, home, port };
+        let fx = Fixture {
+            name,
+            home,
+            port,
+            tag,
+        };
         fx.wait_ready();
         fx
     }
@@ -272,6 +279,9 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = Command::new("docker")
             .args(["rm", "-f", &self.name])
+            .output();
+        let _ = Command::new("docker")
+            .args(["network", "rm", &self.network()])
             .output();
         let _ = std::fs::remove_dir_all(&self.home);
         let _ = std::fs::remove_dir_all(
@@ -529,4 +539,99 @@ pub fn run_with_stdin(mut cmd: Command, stdin: &[u8]) -> (Option<i32>, Vec<u8>, 
     let out = child.wait_with_output().expect("wait xxh");
     let _ = feeder.join();
     (out.status.code(), out.stdout, out.stderr)
+}
+
+impl Fixture {
+    fn network(&self) -> String {
+        format!("{}-net", self.name)
+    }
+
+    /// Another sshd from this fixture's image — same host key, same authorized
+    /// client key — on a private network shared with this fixture's container,
+    /// with **no** published port: reachable only through this one, as a host
+    /// behind a bastion (012 T009). Its name is its address on that network.
+    pub fn hidden(&self, suffix: &str) -> Hidden {
+        let net = self.network();
+        // Both may already exist from an earlier `hidden` call.
+        let _ = Command::new("docker")
+            .args(["network", "create", &net])
+            .output();
+        let _ = Command::new("docker")
+            .args(["network", "connect", &net, &self.name])
+            .output();
+        allow_tcp_forwarding(&self.name);
+        let name = format!("{}-{suffix}", self.name);
+        run_ok(
+            "docker",
+            &[
+                "run",
+                "-d",
+                "--rm",
+                "--network",
+                &net,
+                "--name",
+                &name,
+                &self.tag,
+            ],
+        );
+        for _ in 0..40 {
+            let up = Command::new("docker")
+                .args(["exec", &name, "sh", "-c", "pgrep sshd >/dev/null"])
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if up {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        allow_tcp_forwarding(&name);
+        Hidden { name }
+    }
+}
+
+/// A bastion forwards TCP; Alpine's sshd ships with `AllowTcpForwarding no`.
+/// Changed in the running container only (the image stays minimal) and sshd —
+/// PID 1 — re-reads its config on HUP.
+fn allow_tcp_forwarding(container: &str) {
+    let _ = Command::new("docker")
+        .args([
+            "exec",
+            container,
+            "sh",
+            "-c",
+            "sed -i '/^AllowTcpForwarding/d' /etc/ssh/sshd_config \
+             && echo 'AllowTcpForwarding yes' >> /etc/ssh/sshd_config && kill -HUP 1",
+        ])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
+/// A container behind a [`Fixture`]; removed on drop.
+pub struct Hidden {
+    pub name: String,
+}
+
+impl Hidden {
+    /// Run `cmd` as the test user inside the container (out of band).
+    pub fn exec(&self, cmd: &str) -> String {
+        run_ok(
+            "docker",
+            &["exec", "-u", "tester", &self.name, "sh", "-c", cmd],
+        )
+    }
+
+    /// "CLEAN" iff the test user's `~/.xxh` is gone (Принцип VIII).
+    pub fn cleanliness(&self) -> String {
+        self.exec("test -e \"$HOME/.xxh\" && echo DIRTY || echo CLEAN")
+            .trim()
+            .to_string()
+    }
+}
+
+impl Drop for Hidden {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &self.name])
+            .output();
+    }
 }
