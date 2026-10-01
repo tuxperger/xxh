@@ -86,13 +86,13 @@
 
 ## Phase 4: Polish
 
-- [ ] T015 [P] `.github/workflows/integration.yml`: `doctor_ssh` — в SSH-шаг,
+- [X] T015 [P] `.github/workflows/integration.yml`: `doctor_ssh` — в SSH-шаг,
   `doctor_cli` — в контейнерный
-- [ ] T016 [P] `README.md` (Usage и раздел про `xxh doctor`, заметка о сборке
+- [X] T016 [P] `README.md` (Usage и раздел про `xxh doctor`, заметка о сборке
   шелла) и `specs/001-portable-shell-over-ssh/contracts/cli-commands.md`
-- [ ] T017 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine) и интеграцию на
+- [X] T017 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine) и интеграцию на
   debian; замерить `xxh doctor docker:<c>` (SC-003) и записать в `quickstart.md`
-- [ ] T018 В `specs/006-doctor-preflight/spec.md` — `**Status**: Implemented`
+- [X] T018 В `specs/006-doctor-preflight/spec.md` — `**Status**: Implemented`
 
 ---
 

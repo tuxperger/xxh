@@ -20,3 +20,14 @@ FR-009: пакет шелла без сборки под платформу це
 nix develop -c cargo test -p xxh-cli --test doctor_ssh
 nix develop -c cargo test -p xxh-cli --test doctor_cli
 ```
+
+## Замер SC-003 (2026-10-01, release, alpine:3.20, локальный docker, конфиг автора)
+
+| Команда | Время |
+|---|---|
+| `xxh doctor` (только клиент) | 0,001 с |
+| `xxh doctor docker:<c>` | 0,13 с |
+| `xxh docker:<c> -- true` (первый вход, для сравнения) | 0,56 с |
+
+Гейты: `gates.sh all` (alpine) и интеграция на debian — зелёные, включая
+`doctor_ssh` и `doctor_cli`.

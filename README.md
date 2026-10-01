@@ -66,6 +66,9 @@ xxh <target> -- <command> [args…]   # exact arguments, no shell re-interpretat
 xxh <target> -c '<command line>'    # through your shell: pipes, redirections
 xxh <target> -t -- <command>        # with a terminal (full-screen programs)
 
+# Will a login work? Checks this machine and, read-only, the target
+xxh doctor [<target>] [--json]
+
 # What xxh left on a target, and removing it
 xxh status <target> [--json]           # kept environment, last use, size, sessions, components
 xxh clean <target> [--stale] [--force] # remove it all, or only what you no longer use
@@ -152,6 +155,33 @@ returns. It is built for scripts:
 - With stdin redirected xxh never prompts: needing a password or key passphrase is
   a transport error, not a silent read of your input.
 
+### Before the first login: `xxh doctor`
+
+```console
+$ xxh doctor docker:app1
+client
+  ok    configuration is valid
+  ok    zsh package builds: linux-aarch64, linux-x86_64
+  …
+target app1 (linux/x86_64/musl)
+  ok    required tools present: sh, cat, mkdir, chmod, tar, gzip
+  warn  `zstd` is missing on the target: deliveries fall back to gzip: larger and slower
+        → optional — install `zstd` on the target if that matters
+  ok    environment will be created in /root/.xxh
+  ok    22411 KiB needed, 119100160 KiB free in /root/.xxh
+10 passed, 1 warnings, 0 failed
+```
+
+Without a target it checks only this machine (config, enabled plugins, the shell
+package, `git`/`nix`, container runtimes) — no network. With one it only *reads*
+the target, so the target is unchanged afterwards. Exit code: `0` (warnings
+allowed), `1` if any check failed, `10` if the target is unreachable; `--json`
+for scripts.
+
+A shell package that has no build for the target's platform is reported at login
+too: `xxh: note: …` when the target has that shell anyway, a shell error naming
+the available builds when it does not.
+
 ### Seeing and removing what xxh left
 
 ```console
@@ -174,7 +204,8 @@ something could not be removed, and says what.
 
 
 Exit codes are distinguishable by error class: `10` transport, `20` shell,
-`30` plugin, `40` config, `50` target (`clean` refused or incomplete).
+`30` plugin, `40` config, `50` target (`clean` refused or incomplete); `xxh doctor`
+exits `1` when a check fails.
 
 ## Platform matrix
 
