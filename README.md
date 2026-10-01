@@ -28,8 +28,13 @@ $ # ~/.xxh on the host is gone
   guaranteed cleanup — the image and its layers are never modified).
 - Cleanup is guaranteed: a remote `trap` removes everything on exit (normal or not),
   and a reconcile sweep on the next connect clears leftovers from crashed sessions.
-- With `--keep`, the cache survives between sessions and re-entry transfers only
-  what changed — typically nothing.
+- A component's address is the hash of its content — file names, permission bits
+  and bytes, never timestamps — so the client knows it without packing anything.
+  Only components missing on the host are packed (reproducibly) and sent; packed
+  archives are kept in `~/.cache/xxh/packed` (override: `XXH_PACK_CACHE_DIR`), so
+  a new host does not cost a second compression either.
+- With `--keep`, the cache survives between sessions and re-entry transfers and
+  packs only what changed — typically nothing.
 
 ## Install / build
 

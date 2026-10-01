@@ -70,13 +70,13 @@
 
 ## Phase 3: Polish
 
-- [ ] T010 [P] `README.md`: в разделе «How it works» — адрес компонента по содержимому,
+- [X] T010 [P] `README.md`: в разделе «How it works» — адрес компонента по содержимому,
   повторный вход ничего не упаковывает; упоминание `~/.cache/xxh/packed`
-- [ ] T011 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine и debian); замерить
+- [X] T011 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine и debian); замерить
   `xxh docker:<c> --keep -- true` до и после и записать в `quickstart.md`; убрать из
   `specs/004-command-exec-mode/spec.md` пометку о невыполнении SC-004, если замер
   укладывается
-- [ ] T012 В `specs/023-fast-reentry/spec.md` поставить `**Status**: Implemented`
+- [X] T012 В `specs/023-fast-reentry/spec.md` поставить `**Status**: Implemented`
 
 ---
 
