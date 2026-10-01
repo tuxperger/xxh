@@ -16,6 +16,7 @@ xxh-plugin-api.workspace = true
 tokio.workspace = true
 serde.workspace = true
 toml.workspace = true
+serde_json.workspace = true
 semver.workspace = true
 blake3.workspace = true
 async-trait.workspace = true

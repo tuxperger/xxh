@@ -643,4 +643,53 @@ mod tests {
             }
         );
     }
+
+    /// A plugin built for another platform is skipped with a message and never
+    /// packed for delivery; the rest of the environment is unaffected (C-M5,
+    /// 003 §FR-012 — how a flake program built for one architecture stays off
+    /// hosts of another).
+    #[tokio::test]
+    async fn plugin_for_another_platform_is_skipped_not_delivered() {
+        let _env = no_shell_packages();
+        let base = std::env::temp_dir().join(format!("xxh-skip-{}", std::process::id()));
+        let plugin = |name: &str, target: &str| {
+            let dir = base.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let text = format!(
+                "name = \"{name}\"\nversion = \"1.0.0\"\napi_version = \"1.0.0\"\n\
+                 targets = [\"{target}\"]\n"
+            );
+            std::fs::write(dir.join("plugin.toml"), &text).unwrap();
+            SessionPlugin {
+                manifest: Manifest::parse(&text).unwrap(),
+                dir,
+            }
+        };
+        let plugins = [
+            plugin("native", "linux/x86_64"),
+            plugin("foreign", "linux/aarch64"),
+        ];
+
+        let said = Mutex::new(Vec::<String>::new());
+        let progress = |line: &str| said.lock().unwrap().push(line.to_string());
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            ..Default::default()
+        };
+        let env = vec![minimal_env_component("gz").unwrap()];
+        let s = Session::establish(t, &ssh_target("h"), &eff("sh"), &env, &plugins, &progress)
+            .await
+            .unwrap();
+
+        // env + the native plugin; the foreign one never becomes a component.
+        assert_eq!(s.delivery_report().delivered, 2);
+        let said = said.lock().unwrap();
+        assert!(
+            said.iter()
+                .any(|l| l.contains("plugin foreign: skipped") && l.contains("linux-x86_64")),
+            "the skip must be reported: {said:?}"
+        );
+        assert!(!said.iter().any(|l| l.contains("plugin native: skipped")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

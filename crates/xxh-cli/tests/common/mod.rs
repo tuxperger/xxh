@@ -407,3 +407,80 @@ impl Drop for ContainerFixture {
             .output();
     }
 }
+
+/// Whether this client has Nix with flakes (Nix-backed scenarios skip without it).
+pub fn nix_available() -> bool {
+    Command::new("nix")
+        .args(["flake", "metadata", "--help"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run git in `dir` with a fixed identity (test repositories never read the
+/// developer's git config for authorship).
+pub fn git_in(dir: &Path, args: &[&str]) -> String {
+    let mut full = vec![
+        "-C",
+        dir.to_str().unwrap(),
+        "-c",
+        "user.name=xxh-test",
+        "-c",
+        "user.email=xxh-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    full.extend_from_slice(args);
+    run_ok("git", &full)
+}
+
+/// A committed flake repository in `dir` (003 research R11) exposing, for this
+/// client's system:
+///   * `tool`   — a statically linked program (`pkgsStatic.hello`);
+///   * `dyn`    — the same program dynamically linked (must be rejected);
+///   * `plugin` — a ready-made plugin package (`plugin.toml` + `env.sh`).
+///
+/// nixpkgs follows the provider's pin (`XXH_NIXPKGS_PIN`), and the lock file is
+/// committed so the tree is clean and the source has a real revision.
+pub fn make_test_flake(dir: &Path) {
+    let pin = std::env::var("XXH_NIXPKGS_PIN")
+        .unwrap_or_else(|_| "github:NixOS/nixpkgs/nixos-25.05".into());
+    let system = run_ok(
+        "nix",
+        &[
+            "eval",
+            "--impure",
+            "--raw",
+            "--expr",
+            "builtins.currentSystem",
+        ],
+    );
+    let flake = r#"{
+  inputs.nixpkgs.url = "@PIN@";
+  outputs = { self, nixpkgs }:
+    let
+      system = "@SYSTEM@";
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      packages.${system} = {
+        tool = pkgs.pkgsStatic.hello;
+        dyn = pkgs.hello;
+        plugin = pkgs.runCommandLocal "demo-plugin" { } ''
+          mkdir -p $out
+          printf 'name = "demo"\nversion = "2.0.0"\napi_version = "1.0.0"\n' > $out/plugin.toml
+          printf 'export DEMO_FROM_FLAKE=1\n' > $out/env.sh
+        '';
+      };
+    };
+}
+"#
+    .replace("@PIN@", &pin)
+    .replace("@SYSTEM@", system.trim());
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("flake.nix"), flake).unwrap();
+    git_in(dir, &["init", "-q", "-b", "main"]);
+    git_in(dir, &["add", "flake.nix"]);
+    run_ok("nix", &["flake", "lock", dir.to_str().unwrap()]);
+    git_in(dir, &["add", "flake.lock"]);
+    git_in(dir, &["commit", "-q", "-m", "test flake"]);
+}

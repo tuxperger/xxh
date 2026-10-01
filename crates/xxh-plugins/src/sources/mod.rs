@@ -7,3 +7,7 @@ pub mod local;
 // absence cannot affect the rest of the tool (Принцип IX).
 #[cfg(feature = "nix-source")]
 pub mod nix;
+
+// ⭐ Flake outputs as plugins (003): same client-side Nix requirement, same feature.
+#[cfg(feature = "nix-source")]
+pub mod flake;

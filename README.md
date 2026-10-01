@@ -56,7 +56,7 @@ xxh docker:app1                 # a running docker container by name or id
 xxh podman:6f0a12               # a running podman container
 xxh container:app1 [--runtime docker|podman]   # runtime from flag/config, else auto (docker → podman)
 
-xxh config path                 # canonical config file location
+xxh configxxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]                # canonical config file location
 xxh config show [--host web]   # effective settings (flag > per-host > global > default)
 
 xxh plugin add <git-url | path | nixpkgs:attr>
@@ -152,9 +152,40 @@ timeout_s = 20                        # failure never kills the session
 
 Sources: a git URL (`…#ref` optional), a local path, or — with the ⭐ `nix-source`
 feature and Nix on the **client only** — `nixpkgs:<attr>`, built via `pkgsStatic`
-into a fully static tool delivered to hosts without Nix. Shells themselves are
+into a fully static tool delivered to hosts without Nix. With the same feature,
+`flake:<ref>[#<attr>]` takes a program or a ready-made plugin from **any flake** —
+see below. Shells themselves are
 plugins too (`provides.shell = "zsh"`). First-party packages live in their own
 repositories: `xxh-shell-zsh`, `xxh-plugin-zsh-prompt`, `xxh-plugin-neovim`.
+
+### Plugins from a flake ⭐
+
+```sh
+xxh plugin add 'flake:github:owner/tool#tool'          # a program some flake exports
+xxh plugin add 'flake:github:NixOS/nixpkgs/nixos-25.05#pkgsStatic.ripgrep'
+xxh plugin add 'flake:.#my-plugin'                     # a local flake, e.g. your own plugin
+xxh plugin add 'flake:github:owner/repo' --name mytool # default output, explicit name
+```
+
+The flake is built **on the client**; the host still needs neither Nix nor root.
+
+- **Two output shapes.** An output with a `plugin.toml` at its root is installed as
+  that plugin (its own name, version, hooks, dependencies). An output with a `bin/`
+  directory is wrapped automatically: its programs land on `PATH`, with terminfo and
+  a CA bundle shipped alongside.
+- **The output must be self-sufficient.** Dynamically linked binaries and scripts
+  whose interpreter lives in `/nix/store` are rejected at `plugin add` — on the
+  client, not as a `not found` on the host. Point at a static output
+  (`pkgsStatic.<package>`, or a `*-static` package the flake provides).
+- **Pinned.** The exact flake revision is recorded at install time and shown by
+  `xxh plugin list`; your environment changes only when you run
+  `xxh plugin update <name>` (which reports `old -> new`). A local or dirty tree has
+  no revision to pin — xxh says so.
+- **Per-architecture.** The plugin is tagged with the architecture of its binaries
+  and skipped, with a message, on hosts of any other one.
+- The flake's own `nixConfig` (extra substituters, keys) is never accepted. Keep
+  access tokens out of the reference — use Nix's `access-tokens`/netrc instead;
+  credentials that do appear in a reference are redacted from all output.
 
 [contract]: specs/001-portable-shell-over-ssh/contracts/plugin-manifest.md
 

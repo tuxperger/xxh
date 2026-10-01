@@ -24,3 +24,29 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - run: nix flake check --print-build-logs
       - run: nix build .#xxh --print-build-logs
+
+  # ⭐ Flake plugin source (003): scenarios that need a real `nix` on the client.
+  # `flake_plugin_errors` needs only Nix (nothing is delivered); `flake_plugin_alpine`
+  # also boots the sshd test image and carries the mandatory cleanliness assert.
+  flake-plugin-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [alpine, debian]
+    env:
+      XXH_TEST_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: >
+          nix develop -c cargo test -p xxh-cli --features nix-source
+          --test flake_plugin_errors --test flake_plugin_alpine
+          -- --test-threads=1
+      - name: Teardown leaked containers
+        if: always()
+        run: docker ps -aq --filter "name=xxh-" | xargs -r docker rm -f

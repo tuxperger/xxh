@@ -37,6 +37,7 @@ impl PackageSource for LocalProvider {
             dir,
             env: BTreeMap::new(),
             cleanup: None, // the user's directory is not ours to delete
+            resolved: None,
         })
     }
 }

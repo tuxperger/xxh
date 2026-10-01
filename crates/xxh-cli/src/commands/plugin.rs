@@ -13,8 +13,15 @@ use xxh_plugins::{PluginError, resolver};
 
 #[derive(Subcommand)]
 pub enum PluginAction {
-    /// Install a plugin from a git URL, a local path, or `nixpkgs:<attr>`.
-    Add { source: String },
+    /// Install a plugin from a git URL, a local path, `nixpkgs:<attr>`, or a flake
+    /// output `flake:<ref>[#<attr>]` (the latter two need Nix on this client).
+    Add {
+        source: String,
+        /// Plugin name for a program taken from a flake (default: derived from
+        /// the flake reference).
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Remove an installed plugin (and disable it).
     Remove { name: String },
     /// Enable an installed plugin in the config.
@@ -57,15 +64,37 @@ fn edit_config(f: impl FnOnce(&mut Config)) -> Result<(), PluginCmdError> {
 pub async fn run(action: &PluginAction) -> Result<(), PluginCmdError> {
     let registry = Registry::open_default()?;
     match action {
-        PluginAction::Add { source } => {
-            let spec = SourceSpec::parse(source)?;
+        PluginAction::Add { source, name } => {
+            let mut spec = SourceSpec::parse(source)?;
+            if let Some(chosen) = name {
+                match &mut spec {
+                    SourceSpec::Flake { name, .. } => *name = Some(chosen.clone()),
+                    // Every other source carries its name in its own manifest (C-FC3).
+                    _ => {
+                        return Err(PluginError::Other(
+                            "--name applies only to `flake:` sources; other plugins are \
+                             named by their plugin.toml"
+                                .into(),
+                        )
+                        .into());
+                    }
+                }
+            }
             let m = registry.install(&spec).await?;
+            // The registry records what was actually installed (incl. the pin).
+            let installed = registry.entry(&m.name)?.source;
             println!(
                 "installed {} {} (from {})",
                 m.name,
                 m.version,
-                spec.describe()
+                installed.label()
             );
+            if matches!(installed, SourceSpec::Flake { revision: None, .. }) {
+                eprintln!(
+                    "xxh: warning: flake source has no fixed revision (local or dirty \
+                     tree); this install is not reproducible"
+                );
+            }
             println!("enable it with: xxh plugin enable {}", m.name);
         }
         PluginAction::Remove { name } => {
@@ -88,8 +117,23 @@ pub async fn run(action: &PluginAction) -> Result<(), PluginCmdError> {
             println!("disabled {name}");
         }
         PluginAction::Update { name } => {
+            let before = registry.entry(name)?;
             let m = registry.update(name).await?;
-            println!("updated {} to {}", m.name, m.version);
+            let after = registry.entry(&m.name)?;
+            if after.source.is_flake() {
+                // Pinned sources say which revision they moved from and to (C-FC5).
+                let (old, new) = (
+                    before.source.short_revision(),
+                    after.source.short_revision(),
+                );
+                if old == new && before.hash == after.hash {
+                    println!("{} is up to date ({new})", m.name);
+                } else {
+                    println!("updated {} to {} ({old} -> {new})", m.name, m.version);
+                }
+            } else {
+                println!("updated {} to {}", m.name, m.version);
+            }
         }
         PluginAction::List { enabled } => {
             let enabled_set = crate::commands::config::load()
@@ -104,7 +148,7 @@ pub async fn run(action: &PluginAction) -> Result<(), PluginCmdError> {
                 println!(
                     "{mark}  {name} {} ({})",
                     entry.version,
-                    entry.source.describe()
+                    entry.source.label()
                 );
             }
         }

@@ -74,6 +74,7 @@ impl PackageSource for GitProvider {
             dir: dest.clone(),
             env: BTreeMap::new(),
             cleanup: Some(dest),
+            resolved: None,
         })
     }
 }

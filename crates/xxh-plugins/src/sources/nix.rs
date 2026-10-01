@@ -30,7 +30,7 @@ impl NixProvider {
     }
 }
 
-fn nixpkgs_pin() -> String {
+pub(crate) fn nixpkgs_pin() -> String {
     std::env::var("XXH_NIXPKGS_PIN").unwrap_or_else(|_| DEFAULT_NIXPKGS_PIN.to_string())
 }
 
@@ -49,15 +49,21 @@ pub fn nix_target(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-fn nix_available() -> Result<(), String> {
-    let out = std::process::Command::new("nix")
+pub(crate) fn nix_available() -> Result<(), String> {
+    nix_available_as("nix")
+}
+
+/// [`nix_available`] for an explicit program name — the seam that lets tests
+/// exercise the "no Nix on this client" path without touching `$PATH`.
+pub(crate) fn nix_available_as(program: &str) -> Result<(), String> {
+    let out = std::process::Command::new(program)
         .args(["--version"])
         .output();
     match out {
         Ok(o) if o.status.success() => {}
         _ => return Err("`nix` was not found on this client".into()),
     }
-    let flakes = std::process::Command::new("nix")
+    let flakes = std::process::Command::new(program)
         .args(["flake", "metadata", "--help"])
         .output();
     match flakes {
@@ -99,9 +105,96 @@ pub fn audit_static(dir: &Path) -> Result<(), PluginError> {
     }
 }
 
+/// Self-sufficiency audit for a whole package (003 §FR-010, C-F11): besides the
+/// static-linkage rule of [`audit_static`], no executable script may point its
+/// shebang into `/nix/store` (absent on every target), and all ELF files must
+/// share one known architecture. Returns that architecture (`x86_64` | `aarch64`
+/// | `armv7l`), or `None` when the package ships no ELF at all.
+pub(crate) fn audit_package(dir: &Path) -> Result<Option<&'static str>, PluginError> {
+    fn executable(path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(path)
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            true
+        }
+    }
+    fn walk(
+        base: &Path,
+        dir: &Path,
+        bad: &mut Vec<String>,
+        archs: &mut std::collections::BTreeSet<&'static str>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(base, &path, bad, archs)?;
+                continue;
+            }
+            let rel = path.strip_prefix(base).unwrap_or(&path).display();
+            let data = std::fs::read(&path)?;
+            if let Some(elf) = elf_info(&data) {
+                if elf.interp {
+                    bad.push(format!("{rel} (dynamically linked)"));
+                }
+                match elf.machine {
+                    62 => drop(archs.insert("x86_64")),
+                    183 => drop(archs.insert("aarch64")),
+                    40 => drop(archs.insert("armv7l")),
+                    other => bad.push(format!("{rel} (unsupported architecture {other})")),
+                }
+            } else if data.starts_with(b"#!") && executable(&path) {
+                let line = data.split(|b| *b == b'\n').next().unwrap_or_default();
+                if line.windows(11).any(|w| w == b"/nix/store/") {
+                    bad.push(format!("{rel} (interpreter in /nix/store)"));
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut bad = Vec::new();
+    let mut archs = std::collections::BTreeSet::new();
+    walk(dir, dir, &mut bad, &mut archs)
+        .map_err(|e| PluginError::Other(format!("self-sufficiency audit: {e}")))?;
+    if archs.len() > 1 {
+        bad.push(format!(
+            "mixed architectures ({})",
+            archs.iter().copied().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if bad.is_empty() {
+        return Ok(archs.into_iter().next());
+    }
+    bad.sort();
+    Err(PluginError::Other(format!(
+        "NotSelfContained: {}; a target has neither Nix nor these libraries, so the \
+         flake output must be statically linked and must not reference /nix/store \
+         (use a static output, e.g. `pkgsStatic.<package>`)",
+        bad.join(", ")
+    )))
+}
+
+/// What the audit needs from an ELF header: whether it asks for a dynamic loader
+/// and which machine it was built for.
+struct ElfInfo {
+    interp: bool,
+    machine: u16,
+}
+
 /// `Some(true)` iff `data` is an ELF with a `PT_INTERP` program header
 /// (i.e. dynamically linked); `None` for non-ELF files.
 fn elf_has_interp(data: &[u8]) -> Option<bool> {
+    elf_info(data).map(|e| e.interp)
+}
+
+/// Parse the parts of an ELF header the audits rely on; `None` for non-ELF files.
+fn elf_info(data: &[u8]) -> Option<ElfInfo> {
     const PT_INTERP: u32 = 3;
     if data.len() < 0x40 || &data[..4] != b"\x7fELF" {
         return None;
@@ -147,16 +240,19 @@ fn elf_has_interp(data: &[u8]) -> Option<bool> {
     } else {
         (u16at(0x2a)?, u16at(0x2c)?)
     };
+    let machine = u16::try_from(u16at(0x12)?).ok()?;
+    let mut interp = false;
     for i in 0..phnum {
         let off = usize::try_from(phoff + i * phentsize).ok()?;
         if u32at(off)? == PT_INTERP {
-            return Some(true);
+            interp = true;
+            break;
         }
     }
-    Some(false)
+    Some(ElfInfo { interp, machine })
 }
 
-fn run_nix(args: &[&str]) -> Result<String, PluginError> {
+pub(crate) fn run_nix(args: &[&str]) -> Result<String, PluginError> {
     let out = std::process::Command::new("nix")
         .args(args)
         .output()
@@ -171,7 +267,7 @@ fn run_nix(args: &[&str]) -> Result<String, PluginError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn client_cache_dir() -> Result<PathBuf, PluginError> {
+pub(crate) fn client_cache_dir() -> Result<PathBuf, PluginError> {
     if let Some(v) = std::env::var_os("XXH_NIX_CACHE_DIR") {
         return Ok(PathBuf::from(v));
     }
@@ -182,7 +278,42 @@ fn client_cache_dir() -> Result<PathBuf, PluginError> {
         .join("nix-cache"))
 }
 
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Runtime data a static binary cannot embed (§FR-037, C-N2; 003 §FR-011): the CA
+/// bundle and terminfo from the pinned nixpkgs are copied next to the binaries
+/// and wired through `env_sh`, so nothing on the target resolves into `/nix/store`.
+/// Best-effort per item: a package that cannot be built is simply left out.
+pub(crate) fn add_runtime_data(staging: &Path, env_sh: &mut String) -> Result<(), PluginError> {
+    let pin = nixpkgs_pin();
+    // A package may have several outputs; pick the one that holds the data.
+    let output_with = |attr: &str, rel: &str| -> Option<PathBuf> {
+        let out = run_nix(&[
+            "build",
+            &format!("{pin}#{attr}"),
+            "--no-link",
+            "--print-out-paths",
+        ])
+        .ok()?;
+        out.lines()
+            .map(|l| PathBuf::from(l.trim()).join(rel))
+            .find(|p| p.exists())
+    };
+    if let Some(bundle) = output_with("cacert", "etc/ssl/certs/ca-bundle.crt") {
+        let dst = staging.join("etc/ssl/certs");
+        std::fs::create_dir_all(&dst)
+            .and_then(|_| std::fs::copy(&bundle, dst.join("ca-bundle.crt")))
+            .map_err(|e| PluginError::Other(format!("runtime data: {e}")))?;
+        env_sh
+            .push_str("export SSL_CERT_FILE=\"$XXH_COMPONENT_DIR/etc/ssl/certs/ca-bundle.crt\"\n");
+    }
+    if let Some(terminfo) = output_with("ncurses", "share/terminfo") {
+        copy_tree(&terminfo, &staging.join("share/terminfo"))
+            .map_err(|e| PluginError::Other(format!("runtime data: {e}")))?;
+        env_sh.push_str("export TERMINFO=\"$XXH_COMPONENT_DIR/share/terminfo\"\n");
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
@@ -192,8 +323,15 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
             copy_tree(&src, &dst)?;
         } else {
             std::fs::copy(&src, &dst)?;
-            // Store paths are read-only; the copy must be writable for cleanup.
+            // Store paths are read-only; the copy must be writable for cleanup —
+            // by the owner only, never group/world.
             let mut perm = std::fs::metadata(&dst)?.permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                perm.set_mode(perm.mode() | 0o200);
+            }
+            #[cfg(not(unix))]
             #[allow(clippy::permissions_set_readonly_false)]
             perm.set_readonly(false);
             std::fs::set_permissions(&dst, perm)?;
@@ -239,8 +377,7 @@ impl PackageSource for NixProvider {
         if let Err(reason) = nix_available() {
             return Err(PluginError::SourceUnavailable(reason));
         }
-        let pin = nixpkgs_pin();
-        let pkg_ref = format!("{pin}#pkgsStatic.{attr}");
+        let pkg_ref = format!("{}#pkgsStatic.{attr}", nixpkgs_pin());
 
         // Deterministic client-side cache key for (spec, pin, target) — C-N4.
         let key = blake3::hash(format!("{pkg_ref}|x86_64").as_bytes())
@@ -274,42 +411,11 @@ impl PackageSource for NixProvider {
                 let _ = std::fs::remove_dir_all(&staging);
             })?;
 
-            // Runtime data the static binary cannot embed (§FR-037, C-N2):
-            // terminfo + CA bundle, wired through env in the shell init.
             let mut env_sh = String::from(
                 "# generated by xxh nix provider\n\
                  export PATH=\"$XXH_COMPONENT_DIR/bin:$PATH\"\n",
             );
-            if let Ok(cacert) = run_nix(&[
-                "build",
-                &format!("{pin}#cacert"),
-                "--no-link",
-                "--print-out-paths",
-            ]) {
-                let bundle = PathBuf::from(cacert.trim()).join("etc/ssl/certs/ca-bundle.crt");
-                if bundle.is_file() {
-                    let dst = staging.join("etc/ssl/certs");
-                    std::fs::create_dir_all(&dst)
-                        .and_then(|_| std::fs::copy(&bundle, dst.join("ca-bundle.crt")))
-                        .map_err(|e| PluginError::Other(format!("runtime data: {e}")))?;
-                    env_sh.push_str(
-                        "export SSL_CERT_FILE=\"$XXH_COMPONENT_DIR/etc/ssl/certs/ca-bundle.crt\"\n",
-                    );
-                }
-            }
-            if let Ok(ncurses) = run_nix(&[
-                "build",
-                &format!("{pin}#ncurses"),
-                "--no-link",
-                "--print-out-paths",
-            ]) {
-                let terminfo = PathBuf::from(ncurses.trim()).join("share/terminfo");
-                if terminfo.is_dir() {
-                    copy_tree(&terminfo, &staging.join("share/terminfo"))
-                        .map_err(|e| PluginError::Other(format!("runtime data: {e}")))?;
-                    env_sh.push_str("export TERMINFO=\"$XXH_COMPONENT_DIR/share/terminfo\"\n");
-                }
-            }
+            add_runtime_data(&staging, &mut env_sh)?;
             std::fs::write(staging.join("env.sh"), env_sh)
                 .map_err(|e| PluginError::Other(format!("packaging nix artefact: {e}")))?;
 
@@ -334,6 +440,7 @@ impl PackageSource for NixProvider {
             dir: cache,
             env: BTreeMap::new(), // env is carried in env.sh (sourced on the host)
             cleanup: None,        // the client nix-cache entry is reused (C-N4)
+            resolved: None,
         })
     }
 }
@@ -400,6 +507,95 @@ mod tests {
         std::fs::write(dir.join("bad.bin"), fake_elf(&[1, 3])).unwrap();
         let err = audit_static(&dir).unwrap_err();
         assert!(err.to_string().contains("NotStatic"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// [`fake_elf`] built for a given `e_machine`.
+    fn fake_elf_for(machine: u16, ptypes: &[u32]) -> Vec<u8> {
+        let mut d = fake_elf(ptypes);
+        d[0x12..0x14].copy_from_slice(&machine.to_le_bytes());
+        d
+    }
+
+    fn audit_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("xxh-pkgaudit-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        dir
+    }
+
+    fn write_exec(path: &Path, data: &[u8]) {
+        std::fs::write(path, data).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn package_audit_reports_the_elf_architecture() {
+        let dir = audit_dir("arch");
+        write_exec(&dir.join("bin/tool"), &fake_elf_for(62, &[1]));
+        assert_eq!(audit_package(&dir).unwrap(), Some("x86_64"));
+        write_exec(&dir.join("bin/tool"), &fake_elf_for(183, &[1]));
+        assert_eq!(audit_package(&dir).unwrap(), Some("aarch64"));
+        write_exec(&dir.join("bin/tool"), &fake_elf_for(40, &[1]));
+        assert_eq!(audit_package(&dir).unwrap(), Some("armv7l"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_audit_accepts_portable_scripts_and_data() {
+        let dir = audit_dir("script");
+        write_exec(&dir.join("bin/run"), b"#!/bin/sh\necho hi\n");
+        // Non-executable data may mention the store freely.
+        std::fs::write(dir.join("notes.txt"), b"#!/nix/store/x/bin/sh\n").unwrap();
+        assert_eq!(
+            audit_package(&dir).unwrap(),
+            None,
+            "no ELF ⇒ no architecture"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_audit_rejects_what_cannot_run_on_a_target() {
+        let dir = audit_dir("bad");
+        // Dynamically linked ELF.
+        write_exec(&dir.join("bin/dyn"), &fake_elf_for(62, &[1, 3]));
+        let err = audit_package(&dir).unwrap_err().to_string();
+        assert!(err.contains("NotSelfContained"), "got: {err}");
+        assert!(err.contains("bin/dyn (dynamically linked)"), "got: {err}");
+        assert!(
+            err.contains("pkgsStatic"),
+            "the hint must name a fix: {err}"
+        );
+        std::fs::remove_file(dir.join("bin/dyn")).unwrap();
+
+        // Script whose interpreter lives in the store.
+        write_exec(
+            &dir.join("bin/wrap"),
+            b"#!/nix/store/abc-bash/bin/bash\nexec x\n",
+        );
+        let err = audit_package(&dir).unwrap_err().to_string();
+        assert!(
+            err.contains("bin/wrap (interpreter in /nix/store)"),
+            "got: {err}"
+        );
+        std::fs::remove_file(dir.join("bin/wrap")).unwrap();
+
+        // Two architectures in one package.
+        write_exec(&dir.join("bin/a"), &fake_elf_for(62, &[1]));
+        write_exec(&dir.join("bin/b"), &fake_elf_for(183, &[1]));
+        let err = audit_package(&dir).unwrap_err().to_string();
+        assert!(err.contains("mixed architectures"), "got: {err}");
+        std::fs::remove_file(dir.join("bin/b")).unwrap();
+
+        // An architecture no supported target has.
+        write_exec(&dir.join("bin/a"), &fake_elf_for(243, &[1]));
+        let err = audit_package(&dir).unwrap_err().to_string();
+        assert!(err.contains("unsupported architecture 243"), "got: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

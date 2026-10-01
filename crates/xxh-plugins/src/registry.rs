@@ -88,6 +88,32 @@ impl Registry {
     }
 
     fn store(&self, spec: &SourceSpec, fetched: &FetchedPackage) -> Result<(), PluginError> {
+        // A provider that resolved a pin during the fetch reports the spec to
+        // record; everything else is recorded as requested (C-F18).
+        let spec = fetched.resolved.as_ref().unwrap_or(spec);
+        let name = &fetched.manifest.name;
+        let mut index = self.load_index()?;
+
+        // A flake plugin never silently replaces — or is replaced by — a plugin of
+        // another origin that happens to share its name (003 §FR-009, C-F20).
+        // Checked before anything is written.
+        if let Some(existing) = index.plugins.get(name) {
+            let flake_involved = existing.source.is_flake() || spec.is_flake();
+            if flake_involved && !existing.source.same_origin(spec) {
+                // Only a flake program can be renamed at install time.
+                let rename = if spec.is_flake() {
+                    "choose another name with `xxh plugin add --name <name> …` or "
+                } else {
+                    ""
+                };
+                return Err(PluginError::Other(format!(
+                    "NameConflict: a plugin named `{name}` is already installed from {}; \
+                     {rename}remove it first with `xxh plugin remove {name}`",
+                    existing.source.describe()
+                )));
+            }
+        }
+
         let hash = hash_dir(&fetched.dir)?;
         let dest = self.root.join("packages").join(&hash);
         if !dest.is_dir() {
@@ -99,7 +125,6 @@ impl Registry {
                 .map_err(|e| PluginError::Other(format!("storing package: {e}")))?;
         }
 
-        let mut index = self.load_index()?;
         let old = index.plugins.insert(
             fetched.manifest.name.clone(),
             IndexEntry {
@@ -118,10 +143,12 @@ impl Registry {
         Ok(())
     }
 
-    /// Re-fetch a plugin from its recorded source (T035 update).
+    /// Re-fetch a plugin from its recorded source (T035 update). A recorded pin is
+    /// dropped first, so the source is resolved afresh — the only operation that
+    /// moves a pinned plugin to a new revision (003 §FR-016, C-F19).
     pub async fn update(&self, name: &str) -> Result<Manifest, PluginError> {
         let entry = self.entry(name)?;
-        self.install(&entry.source).await
+        self.install(&entry.source.unpinned()).await
     }
 
     /// Remove a plugin and its content (if unshared).
@@ -144,7 +171,8 @@ impl Registry {
         Ok(self.load_index()?.plugins)
     }
 
-    fn entry(&self, name: &str) -> Result<IndexEntry, PluginError> {
+    /// The index record of an installed plugin (source, content hash, version).
+    pub fn entry(&self, name: &str) -> Result<IndexEntry, PluginError> {
         self.load_index()?
             .plugins
             .get(name)
@@ -276,6 +304,120 @@ mod tests {
         reg.install(&spec).await.unwrap();
         let h2 = reg.list().unwrap()["twice"].hash.clone();
         assert_eq!(h1, h2, "same content ⇒ same address");
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn flake_spec(reference: &str) -> SourceSpec {
+        SourceSpec::Flake {
+            reference: reference.into(),
+            attr: "default".into(),
+            locked_url: None,
+            revision: None,
+            name: None,
+        }
+    }
+
+    /// What a provider hands back, built by hand so the registry rules can be
+    /// tested without Nix.
+    fn fetched(dir: &Path, resolved: Option<SourceSpec>) -> FetchedPackage {
+        FetchedPackage {
+            manifest: crate::source::read_manifest(dir).unwrap(),
+            dir: dir.to_path_buf(),
+            env: BTreeMap::new(),
+            cleanup: None,
+            resolved,
+        }
+    }
+
+    #[test]
+    fn resolved_spec_is_what_gets_recorded() {
+        let (reg, root) = tmp_registry();
+        let src = plugin_dir("pinned", "1.0.0");
+        let pinned = SourceSpec::Flake {
+            reference: "github:o/r".into(),
+            attr: "default".into(),
+            locked_url: Some("github:o/r/abc".into()),
+            revision: Some("abc".into()),
+            name: None,
+        };
+        reg.store(
+            &flake_spec("github:o/r"),
+            &fetched(&src, Some(pinned.clone())),
+        )
+        .unwrap();
+        assert_eq!(reg.entry("pinned").unwrap().source, pinned);
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn flake_never_silently_replaces_another_origin() {
+        let (reg, root) = tmp_registry();
+        let src = plugin_dir("clash", "1.0.0");
+        let local = SourceSpec::Local { path: src.clone() };
+        reg.install(&local).await.unwrap();
+        let before = std::fs::read_to_string(root.join("index.toml")).unwrap();
+
+        // flake over local: rejected, registry untouched.
+        let err = reg
+            .store(&flake_spec("github:o/r"), &fetched(&src, None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("NameConflict"), "got: {err}");
+        assert!(
+            err.contains("--name"),
+            "the message must name a way out: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("index.toml")).unwrap(),
+            before
+        );
+
+        // local over local keeps the pre-existing behaviour: refreshed in place.
+        reg.install(&local).await.unwrap();
+
+        // The same flake origin again updates in place, pin or no pin…
+        reg.remove("clash").unwrap();
+        reg.store(&flake_spec("github:o/r"), &fetched(&src, None))
+            .unwrap();
+        reg.store(&flake_spec("github:o/r"), &fetched(&src, None))
+            .unwrap();
+        // …while another flake of the same name, or a local plugin, is a conflict.
+        assert!(
+            reg.store(&flake_spec("github:x/y"), &fetched(&src, None))
+                .is_err()
+        );
+        assert!(reg.install(&local).await.is_err());
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn failed_install_leaves_the_registry_untouched() {
+        let (reg, root) = tmp_registry();
+        let src = plugin_dir("stable", "1.0.0");
+        reg.install(&SourceSpec::Local { path: src.clone() })
+            .await
+            .unwrap();
+        let before = std::fs::read_to_string(root.join("index.toml")).unwrap();
+
+        let missing = SourceSpec::Local {
+            path: root.join("no-such-plugin"),
+        };
+        assert!(reg.install(&missing).await.is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("index.toml")).unwrap(),
+            before
+        );
+        assert!(
+            reg.package_dir("stable")
+                .unwrap()
+                .join("plugin.toml")
+                .is_file()
+        );
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&root);
