@@ -27,6 +27,11 @@
 #   prune <force> <hash>.. -> remove cached components not in the given list
 #   probe                  -> report tools, the root a login would use and the
 #                             free space there, writing nothing (006)
+#   verify <hash>..        -> describe the root's owner/permissions and each
+#                             cached component (dirs, executables, other
+#                             objects, sha256 of every file) for the client to
+#                             compare (014)
+#   discard <hash>..       -> remove those cached components (014)
 #
 # status/clean/prune/probe are only ever streamed (`sh -s -- status`) and never create
 # anything — not even the root (005 contracts/bootstrap-status-clean.md).
@@ -387,6 +392,59 @@ xxh_probe() {
     printf 'free\t%s\n' "${_free:--}"
 }
 
+# --- Integrity: verify / discard (014, contracts/bootstrap-verify.md) --------
+
+# Describe the root and each requested component so the client can compare it
+# with its own copy before anything from it is used (C-V1..C-V4). Changes
+# nothing. find/sha256sum/sed are outside the host contract: without them the
+# answer is `unverifiable` and the client trusts nothing kept (C-V2).
+xxh_verify() {
+    _own=foreign
+    if [ -O "$XXH_ROOT" ] 2>/dev/null; then
+        _own=own
+    fi
+    _perm=$(ls -ld "$XXH_ROOT" 2>/dev/null || true)
+    printf 'root\t%s\t%s\n' "$_own" "${_perm%% *}"
+    for _t in find sha256sum sed; do
+        if ! command -v "$_t" >/dev/null 2>&1; then
+            printf 'unverifiable\t%s\n' "$_t"
+            return 0
+        fi
+    done
+    _tab=$(printf '\t')
+    for _h in "$@"; do
+        if ! xxh_is_hash "$_h"; then
+            echo "xxh-bootstrap: not a component address: '$_h'" >&2
+            exit 2
+        fi
+        _d="$CACHE_DIR/$_h"
+        if [ ! -d "$_d" ] || [ -L "$_d" ]; then
+            printf 'missing\t%s\n' "$_h"
+            continue
+        fi
+        printf 'component\t%s\n' "$_h"
+        (
+            cd "$_d" || exit 0
+            find . -type d | sed "s/^/d$_tab/"
+            find . ! -type d ! -type f | sed "s/^/o$_tab/"
+            find . -type f -perm -u+x | sed "s/^/x$_tab/"
+            find . -type f -exec sha256sum {} + |
+                sed "s/^\([0-9a-f]\{64\}\)  */f$_tab\1$_tab/"
+        )
+    done
+}
+
+# Remove cached components that failed verification (C-V5).
+xxh_discard() {
+    for _h in "$@"; do
+        if ! xxh_is_hash "$_h"; then
+            echo "xxh-bootstrap: not a component address: '$_h'" >&2
+            exit 2
+        fi
+        rm -rf "${CACHE_DIR:?}/$_h"
+    done
+}
+
 _cmd="${1:-}"
 [ "$#" -gt 0 ] && shift || true
 case "$_cmd" in
@@ -400,5 +458,7 @@ case "$_cmd" in
     clean)      xxh_clean "$@" ;;
     prune)      xxh_prune "$@" ;;
     probe)      xxh_probe ;;
+    verify)     xxh_need_root; xxh_verify "$@" ;;
+    discard)    xxh_need_root; xxh_discard "$@" ;;
     *)          echo "xxh-bootstrap: unknown subcommand '$_cmd'" >&2; exit 2 ;;
 esac

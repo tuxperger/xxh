@@ -322,8 +322,67 @@ impl<T: Transport> Session<T> {
             .await?;
         transport.exec(&boot("reconcile")).await?;
 
-        // 4) Deliver only components missing from the host cache (§FR-013, VI).
-        let host_hashes = list_cache(&mut transport, &boot("list-cache")).await?;
+        // 4) Nothing kept is trusted unchecked (014): the target describes every
+        //    component this session needs and only those matching the client's
+        //    copy are reused. The rest is discarded and sent again — before any
+        //    of it is sourced or run (§FR-001/002).
+        let all: Vec<&str> = components.iter().map(|c| c.hash.as_str()).collect();
+        let verify = verify_on_target(&mut transport, &boot, &all).await?;
+        if !verify.root_own {
+            return Err(ShellError::Other(format!(
+                "the environment directory {remote_root} belongs to another user; \
+                 refusing to use it (remove it or log in as its owner)"
+            ))
+            .into());
+        }
+        let mut distrust = false;
+        if verify.root_too_open() {
+            notes.push(format!(
+                "the environment directory {remote_root} was writable by others ({}); \
+                 its permissions are narrowed and kept components sent again",
+                verify.root_perm
+            ));
+            distrust = true;
+        }
+        if let Some(tool) = &verify.unverifiable {
+            notes.push(format!(
+                "kept components cannot be checked on this target (no `{tool}`); \
+                 they are sent again instead of trusted"
+            ));
+            distrust = true;
+        }
+        let mut host_hashes = BTreeSet::new();
+        let mut discard: Vec<&str> = Vec::new();
+        for comp in &components {
+            if distrust {
+                discard.push(&comp.hash);
+                continue;
+            }
+            let Some(Some(actual)) = verify.components.get(&comp.hash) else {
+                continue; // not on the target
+            };
+            match crate::integrity::compare(&comp.expected_listing()?, actual) {
+                None => {
+                    host_hashes.insert(comp.hash.clone());
+                }
+                Some(why) => {
+                    notes.push(format!(
+                        "the kept {} on the target was modified ({why}); it is sent again",
+                        comp.label
+                    ));
+                    discard.push(&comp.hash);
+                }
+            }
+        }
+        if !discard.is_empty() {
+            transport
+                .exec(&boot(&format!("discard {}", discard.join(" "))))
+                .await?;
+        }
+
+        // 5) Deliver what is missing or was discarded (§FR-013, VI); list-cache
+        //    also narrows the root to its owner.
+        list_cache(&mut transport, &boot("list-cache")).await?;
         let to_send = super::deploy::missing(&components, &host_hashes);
         let report = DeliveryReport {
             delivered: to_send.len(),
@@ -339,13 +398,43 @@ impl<T: Transport> Session<T> {
             "component delivery (reused {} components)",
             report.reused
         );
-        for comp in to_send {
-            transport
+        for comp in &to_send {
+            let out = transport
                 .upload_stream(
                     &boot(&format!("recv {} {}", comp.hash, comp.fmt)),
                     comp.payload()?,
                 )
                 .await?;
+            // A failed unpack is never a delivery (014 C-V10, US2).
+            if out.exit_code != 0 {
+                return Err(component_error(
+                    comp,
+                    &format!(
+                        "unpacking it on the target failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                ));
+            }
+        }
+        // What was just delivered is checked too (§FR-004); a second mismatch
+        // means something on the target keeps changing it (C-V7).
+        if !to_send.is_empty() && verify.unverifiable.is_none() {
+            let sent: Vec<&str> = to_send.iter().map(|c| c.hash.as_str()).collect();
+            let check = verify_on_target(&mut transport, &boot, &sent).await?;
+            for comp in &to_send {
+                let why = match check.components.get(&comp.hash) {
+                    Some(Some(actual)) => {
+                        crate::integrity::compare(&comp.expected_listing()?, actual)
+                    }
+                    _ => Some("it is missing after delivery".to_string()),
+                };
+                if let Some(why) = why {
+                    return Err(component_error(
+                        comp,
+                        &format!("it does not match on the target after delivery: {why}"),
+                    ));
+                }
+            }
         }
         run_stage_hooks(&active, LifecycleStage::PostDeploy, progress).await;
 
@@ -537,6 +626,35 @@ async fn list_cache<T: Transport>(
         .collect())
 }
 
+/// Ask the target to describe `hashes` (014 C-V1..C-V3).
+async fn verify_on_target<T: Transport>(
+    t: &mut T,
+    boot: &dyn Fn(&str) -> String,
+    hashes: &[&str],
+) -> Result<crate::integrity::VerifyReply, SessionError> {
+    let out = t
+        .exec(&boot(&format!("verify {}", hashes.join(" "))))
+        .await?;
+    if out.exit_code != 0 {
+        return Err(ShellError::Other(format!(
+            "checking the kept environment failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+        .into());
+    }
+    crate::integrity::parse_verify(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A delivery problem in the class of the component it hit (014 US2): a
+/// plugin's is a plugin error, everything else a shell error.
+fn component_error(comp: &Component, why: &str) -> SessionError {
+    let msg = format!("{} ({}): {why}", comp.label, &comp.hash[..12]);
+    match comp.kind {
+        ComponentKind::Plugin => PluginError::Other(msg).into(),
+        ComponentKind::Shell | ComponentKind::Config => ShellError::Other(msg).into(),
+    }
+}
+
 fn session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let n = SystemTime::now()
@@ -660,6 +778,35 @@ mod tests {
         /// Component addresses the mock host reports as already cached.
         host_cache: Vec<String>,
         commands: Arc<Mutex<Vec<String>>>,
+        /// What the mock target's cache holds, as `verify` describes it (014):
+        /// filled by tests for kept components and by `recv` for delivered ones.
+        kept: Arc<Mutex<BTreeMap<String, crate::integrity::Listing>>>,
+        /// The `root` line of `verify` (default: owned, 0700).
+        root_line: Option<&'static str>,
+        /// `verify` answers `unverifiable` (no sha256sum on the target).
+        unverifiable: bool,
+        /// Every delivered component is corrupted on arrival.
+        corrupt_on_recv: bool,
+        /// `recv` fails with this exit code.
+        recv_fails: bool,
+    }
+
+    /// The `verify` answer for one kept component.
+    fn listing_reply(hash: &str, l: &crate::integrity::Listing) -> String {
+        let mut s = format!("component\t{hash}\n");
+        for d in &l.dirs {
+            s.push_str(&format!("d\t{d}\n"));
+        }
+        for x in &l.execs {
+            s.push_str(&format!("x\t{x}\n"));
+        }
+        for o in &l.others {
+            s.push_str(&format!("o\t{o}\n"));
+        }
+        for (p, sha) in &l.files {
+            s.push_str(&format!("f\t{sha}\t{p}\n"));
+        }
+        s
     }
 
     impl MockTransport {
@@ -703,14 +850,52 @@ mod tests {
             if cmd.contains("list-cache") {
                 return Ok(Self::ok(&self.host_cache.join("\n")));
             }
+            if let Some(args) = cmd.split(" verify ").nth(1) {
+                let mut out = format!("root\t{}\n", self.root_line.unwrap_or("own\tdrwx------"));
+                if self.unverifiable {
+                    out.push_str("unverifiable\tsha256sum\n");
+                    return Ok(Self::ok(&out));
+                }
+                let kept = self.kept.lock().unwrap();
+                for h in args.split_whitespace() {
+                    match kept.get(h) {
+                        Some(l) => out.push_str(&listing_reply(h, l)),
+                        None => out.push_str(&format!("missing\t{h}\n")),
+                    }
+                }
+                return Ok(Self::ok(&out));
+            }
+            if let Some(args) = cmd.split(" discard ").nth(1) {
+                let mut kept = self.kept.lock().unwrap();
+                for h in args.split_whitespace() {
+                    kept.remove(h);
+                }
+            }
             Ok(Self::ok(""))
         }
         async fn upload_stream(
             &mut self,
             cmd: &str,
-            _data: Vec<u8>,
+            data: Vec<u8>,
         ) -> Result<ExecOutput, TransportError> {
             self.commands.lock().unwrap().push(cmd.to_string());
+            if let Some(args) = cmd.split(" recv ").nth(1) {
+                if self.recv_fails {
+                    return Ok(ExecOutput {
+                        exit_code: 1,
+                        stdout: vec![],
+                        stderr: b"tar: short read".to_vec(),
+                    });
+                }
+                let mut it = args.split_whitespace();
+                let (h, fmt) = (it.next().unwrap(), it.next().unwrap_or("gz"));
+                let mut l = crate::deploy::listing_from_archive(&data, fmt).unwrap();
+                if self.corrupt_on_recv {
+                    l.files.insert("./planted".into(), "0".repeat(64));
+                }
+                self.kept.lock().unwrap().insert(h.to_string(), l);
+                return Ok(Self::ok(""));
+            }
             if cmd.contains("detect") {
                 return Ok(Self::ok("Linux x86_64 | tar gzip"));
             }
@@ -1010,12 +1195,18 @@ mod tests {
             dir: dir.clone(),
         };
         let address = crate::deploy::tree_hash(&dir).unwrap();
+        // Kept intact on the target (014: verified, then reused).
+        let intact = Component::pack_dir(ComponentKind::Plugin, &dir, "gz")
+            .unwrap()
+            .expected_listing()
+            .unwrap();
 
         let t = MockTransport {
             host_shells: vec!["sh"],
             host_cache: vec![address.clone()],
             ..Default::default()
         };
+        t.kept.lock().unwrap().insert(address.clone(), intact);
         let log = t.commands.clone();
         let env = vec![minimal_env_component("gz").unwrap()];
         let s = Session::establish(
@@ -1180,5 +1371,137 @@ mod tests {
         );
         drop(_g);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    async fn login(t: MockTransport) -> Result<Session<MockTransport>, SessionError> {
+        let env = vec![minimal_env_component("gz").unwrap()];
+        Session::establish(
+            t,
+            &ssh_target("h"),
+            &eff("sh"),
+            &env,
+            &[],
+            silent_progress(),
+        )
+        .await
+    }
+
+    fn env_listing() -> (String, crate::integrity::Listing) {
+        let env = minimal_env_component("gz").unwrap();
+        (env.hash.clone(), env.expected_listing().unwrap())
+    }
+
+    /// A kept component that was modified is named, discarded and sent again;
+    /// an intact one is reused (014 T005, §FR-001..003, §FR-008).
+    #[tokio::test]
+    async fn tampered_kept_component_is_replaced() {
+        let _env = no_shell_packages();
+        let (hash, mut listing) = env_listing();
+        listing.files.insert("./env.sh".into(), "e".repeat(64));
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            ..Default::default()
+        };
+        t.kept.lock().unwrap().insert(hash.clone(), listing);
+        let log = t.commands.clone();
+        let s = login(t).await.unwrap();
+        assert_eq!(s.delivery_report().delivered, 1);
+        assert!(
+            s.notes()
+                .iter()
+                .any(|n| n.contains("env") && n.contains("./env.sh was changed")),
+            "{:?}",
+            s.notes()
+        );
+        let log = log.lock().unwrap();
+        let discard = log
+            .iter()
+            .position(|c| c.contains(&format!("discard {hash}")));
+        let recv = log.iter().position(|c| c.contains(&format!("recv {hash}")));
+        assert!(
+            discard.is_some() && recv.is_some() && discard < recv,
+            "{log:?}"
+        );
+    }
+
+    /// Without the tools to check, nothing kept is trusted (014 §FR-006).
+    #[tokio::test]
+    async fn unverifiable_target_trusts_nothing_kept() {
+        let _env = no_shell_packages();
+        let (hash, listing) = env_listing();
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            unverifiable: true,
+            ..Default::default()
+        };
+        t.kept.lock().unwrap().insert(hash, listing);
+        let s = login(t).await.unwrap();
+        assert_eq!(s.delivery_report().delivered, 1, "re-sent, not reused");
+        assert!(s.notes().iter().any(|n| n.contains("cannot be checked")));
+    }
+
+    /// Someone else's root is refused before anything is sent; a root open to
+    /// others is narrowed and its content re-sent (014 §FR-005).
+    #[tokio::test]
+    async fn environment_root_ownership_and_permissions() {
+        let _env = no_shell_packages();
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            root_line: Some("foreign\tdrwx------"),
+            ..Default::default()
+        };
+        let log = t.commands.clone();
+        let err = login(t).await.err().expect("foreign root");
+        assert!(err.to_string().contains("another user"), "{err}");
+        assert!(!log.lock().unwrap().iter().any(|c| c.contains("recv")));
+
+        let (hash, listing) = env_listing();
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            root_line: Some("own\tdrwxrwxrwx"),
+            ..Default::default()
+        };
+        t.kept.lock().unwrap().insert(hash, listing);
+        let s = login(t).await.unwrap();
+        assert_eq!(s.delivery_report().delivered, 1);
+        assert!(s.notes().iter().any(|n| n.contains("writable by others")));
+    }
+
+    /// A failed unpack and a delivery that does not match are errors in the
+    /// component's class (014 T008, C-V7, C-V10).
+    #[tokio::test]
+    async fn failed_or_corrupted_delivery_is_an_error() {
+        let _env = no_shell_packages();
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            recv_fails: true,
+            ..Default::default()
+        };
+        let err = login(t).await.err().expect("recv failed");
+        assert!(matches!(err, SessionError::Shell(_)), "{err:?}");
+        assert!(err.to_string().contains("short read"), "{err}");
+
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            corrupt_on_recv: true,
+            ..Default::default()
+        };
+        let err = login(t).await.err().expect("corrupted on arrival");
+        assert!(
+            err.to_string().contains("after delivery") && err.to_string().contains("env"),
+            "{err}"
+        );
+
+        // A plugin's delivery problem is a plugin error.
+        let dir = std::env::temp_dir().join(format!("xxh-int-plugin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = "name = \"p\"\nversion = \"1.0.0\"\napi_version = \"1.0.0\"\n";
+        std::fs::write(dir.join("plugin.toml"), text).unwrap();
+        let plugin = Component::pack_dir(ComponentKind::Plugin, &dir, "gz")
+            .unwrap()
+            .with_label("plugin p");
+        let e = component_error(&plugin, "boom");
+        assert!(matches!(e, SessionError::Plugin(_)), "{e:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

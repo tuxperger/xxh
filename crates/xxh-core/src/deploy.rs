@@ -101,6 +101,43 @@ impl Component {
         }
     }
 
+    /// What this component looks like once unpacked on a host — compared with
+    /// the target's `verify` answer before a kept copy is trusted (014 C-V6).
+    /// A directory is read as it would be packed (symlinks followed); an already
+    /// packed component is read from its archive.
+    pub fn expected_listing(&self) -> Result<crate::integrity::Listing, ShellError> {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
+        let hex = |data: &[u8]| {
+            let mut s = String::with_capacity(64);
+            for b in Sha256::digest(data) {
+                let _ = write!(s, "{b:02x}");
+            }
+            s
+        };
+        let mut l = crate::integrity::Listing::default();
+        l.dirs.insert(".".into());
+        match &self.source {
+            Source::Dir(dir) => {
+                for e in entries(dir)? {
+                    let path = format!("./{}", e.rel);
+                    if e.is_dir {
+                        l.dirs.insert(path);
+                        continue;
+                    }
+                    let data = std::fs::read(&e.path)
+                        .map_err(|err| ShellError::Other(format!("{}: {err}", e.path.display())))?;
+                    if e.mode & 0o100 != 0 {
+                        l.execs.insert(path.clone());
+                    }
+                    l.files.insert(path, hex(&data));
+                }
+            }
+            Source::Packed(bytes) => return listing_from_archive(bytes, self.fmt),
+        }
+        Ok(l)
+    }
+
     /// Name the component for reports (005 T005).
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
@@ -128,6 +165,50 @@ impl Component {
             }
         }
     }
+}
+
+/// What an archive unpacks to (014): its directories, executables and the
+/// SHA-256 of every file, as `verify` describes a component on a target.
+pub fn listing_from_archive(
+    bytes: &[u8],
+    fmt: &str,
+) -> Result<crate::integrity::Listing, ShellError> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let io = |e: std::io::Error| ShellError::Other(format!("reading archive: {e}"));
+    let tar_bytes = match fmt {
+        "zst" => zstd::stream::decode_all(bytes).map_err(io)?,
+        _ => {
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(bytes), &mut out)
+                .map_err(io)?;
+            out
+        }
+    };
+    let mut l = crate::integrity::Listing::default();
+    l.dirs.insert(".".into());
+    let mut archive = tar::Archive::new(&tar_bytes[..]);
+    for entry in archive.entries().map_err(io)? {
+        let mut entry = entry.map_err(io)?;
+        let rel = entry.path().map_err(io)?.to_string_lossy().into_owned();
+        let path = format!("./{}", rel.trim_end_matches('/'));
+        if entry.header().entry_type() == tar::EntryType::Directory {
+            l.dirs.insert(path);
+            continue;
+        }
+        let mode = entry.header().mode().map_err(io)?;
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut data).map_err(io)?;
+        if mode & 0o100 != 0 {
+            l.execs.insert(path.clone());
+        }
+        let mut hex = String::with_capacity(64);
+        for b in Sha256::digest(&data) {
+            let _ = write!(hex, "{b:02x}");
+        }
+        l.files.insert(path, hex);
+    }
+    Ok(l)
 }
 
 /// Which of `components` are missing from the host, given the set of hashes the host
@@ -506,6 +587,20 @@ mod tests {
             eager.size_hint().unwrap(),
             eager.payload().unwrap().len() as u64
         );
+    }
+
+    /// A tree and its own archive describe the same unpacked component (014 T003).
+    #[test]
+    fn listing_is_the_same_from_tree_and_archive() {
+        let d = fixture_dir();
+        let lazy = Component::pack_dir(ComponentKind::Plugin, d.path(), "gz").unwrap();
+        let eager = Component::pack_dir_eager(ComponentKind::Plugin, d.path(), "zst").unwrap();
+        let a = lazy.expected_listing().unwrap();
+        assert_eq!(a, eager.expected_listing().unwrap());
+        assert!(a.dirs.contains(".") && a.dirs.contains("./bin"));
+        assert!(a.execs.contains("./bin/tool"));
+        assert!(!a.execs.contains("./greet.sh"));
+        assert_eq!(a.files.len(), 2);
     }
 
     #[test]

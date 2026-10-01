@@ -5,6 +5,7 @@
 
 pub mod deploy;
 pub mod doctor;
+pub mod integrity;
 pub mod platform;
 pub mod remote_env;
 pub mod session;
