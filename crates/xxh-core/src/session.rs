@@ -123,6 +123,9 @@ fn exec_line(cmd: &ExecCommand, shell_cmd: &str) -> String {
 pub struct Plan {
     pub components: Vec<Component>,
     launch: ShellLaunch,
+    /// The shell package has no build for this platform (the builds it has):
+    /// the host's own shell must stand in (006 §FR-009).
+    missing_build: Option<Vec<String>>,
     /// Plugins that target this platform, in resolved order.
     pub plugins: Vec<SessionPlugin>,
 }
@@ -158,8 +161,9 @@ pub fn plan_components(
 ) -> Result<Plan, SessionError> {
     let fmt = platform.preferred_archive_fmt();
     let mut components: Vec<Component> = Vec::new();
-    let launch = match shellpkg::find(&eff.shell, platform)? {
-        Some(pkg) => {
+    let mut missing_build = None;
+    let launch = match shellpkg::lookup(&eff.shell, platform)? {
+        shellpkg::ShellLookup::Found(pkg) => {
             let comp = Component::pack_dir(ComponentKind::Shell, &pkg.tree, fmt)?
                 .with_label(format!("shell {}", eff.shell));
             let launch = ShellLaunch::Packaged {
@@ -169,7 +173,11 @@ pub fn plan_components(
             components.push(comp);
             launch
         }
-        None => ShellLaunch::HostBinary(eff.shell.clone()),
+        shellpkg::ShellLookup::NoBuild { available } => {
+            missing_build = Some(available);
+            ShellLaunch::HostBinary(eff.shell.clone())
+        }
+        shellpkg::ShellLookup::NotInstalled => ShellLaunch::HostBinary(eff.shell.clone()),
     };
     components.extend(env_components.iter().cloned());
 
@@ -198,6 +206,7 @@ pub fn plan_components(
     Ok(Plan {
         components,
         launch,
+        missing_build,
         plugins: active,
     })
 }
@@ -217,6 +226,8 @@ pub struct Session<T: Transport> {
     /// of config/plugin components, in delivery order).
     prelude: String,
     report: DeliveryReport,
+    /// Things the user should know about this session (006 §FR-009).
+    notes: Vec<String>,
     /// Plugins active in this session (platform-filtered, resolved order) —
     /// kept for their `pre_exit` hooks (T039).
     plugins: Vec<SessionPlugin>,
@@ -249,14 +260,36 @@ impl<T: Transport> Session<T> {
         let Plan {
             components,
             launch,
+            missing_build,
             plugins: active,
         } = plan_components(&platform, eff, env_components, plugins, progress)?;
+        let mut notes = Vec::new();
         if let ShellLaunch::HostBinary(name) = &launch {
             let probe = transport
                 .exec(&format!("command -v {name} >/dev/null 2>&1"))
                 .await?;
-            if probe.exit_code != 0 {
-                return Err(ShellError::NotAvailable(name.clone()).into());
+            // A package without this platform's build is said out loud either
+            // way, not just in the debug log (006 §FR-009, C-D7/C-D8).
+            match (probe.exit_code == 0, missing_build) {
+                (true, Some(available)) => notes.push(format!(
+                    "the {name} package has no build for {} ({}); using the host's {name}",
+                    platform.target_key(),
+                    if available.is_empty() {
+                        "no builds yet".to_string()
+                    } else {
+                        format!("has {}", available.join(", "))
+                    }
+                )),
+                (true, None) => {}
+                (false, Some(available)) => {
+                    return Err(ShellError::NoBuild {
+                        shell: name.clone(),
+                        target: platform.target_key(),
+                        available,
+                    }
+                    .into());
+                }
+                (false, None) => return Err(ShellError::NotAvailable(name.clone()).into()),
             }
         }
 
@@ -356,6 +389,7 @@ impl<T: Transport> Session<T> {
             shell_cmd,
             prelude,
             report,
+            notes,
             plugins: active,
         })
     }
@@ -363,6 +397,12 @@ impl<T: Transport> Session<T> {
     /// Detected host platform.
     pub fn platform(&self) -> &Platform {
         &self.platform
+    }
+
+    /// Warnings worth showing even when stage progress is silent — e.g. a shell
+    /// package without a build for this platform (006 C-D7).
+    pub fn notes(&self) -> &[String] {
+        &self.notes
     }
 
     /// Transfer statistics for this establish (§FR-014, SC-004).
@@ -1072,6 +1112,72 @@ mod tests {
             .collect();
         let planned: Vec<String> = plan.components.iter().map(|c| c.hash.clone()).collect();
         assert_eq!(sent, planned);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A shell package without a build for the target's platform is not silent:
+    /// a note when the host has the shell, a shell-class error naming the builds
+    /// when it does not (006 T007, §FR-009, C-D7/C-D8).
+    #[tokio::test]
+    async fn missing_shell_build_is_visible() {
+        let base = std::env::temp_dir().join(format!("xxh-nobuild-{}", std::process::id()));
+        let dir = base.join("zsh");
+        std::fs::create_dir_all(dir.join("dist/linux-aarch64/bin")).unwrap();
+        std::fs::write(dir.join("dist/linux-aarch64/bin/zsh"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(
+            dir.join("manifest.toml"),
+            "name = \"zsh\"\nversion = \"1.0.0\"\napi_version = \"1.0.0\"\n\
+             [provides]\nshell = \"zsh\"\n",
+        )
+        .unwrap();
+        let _g = crate::shellpkg::testenv::shells_dir(&base);
+        let env = vec![minimal_env_component("gz").unwrap()];
+
+        let with_zsh = MockTransport {
+            host_shells: vec!["zsh"],
+            ..Default::default()
+        };
+        let s = Session::establish(
+            with_zsh,
+            &ssh_target("h"),
+            &eff("zsh"),
+            &env,
+            &[],
+            silent_progress(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.notes().len(), 1);
+        assert!(
+            s.notes()[0].contains("no build for linux-x86_64 (has linux-aarch64)"),
+            "{:?}",
+            s.notes()
+        );
+
+        let without = MockTransport::default();
+        let log = without.commands.clone();
+        let err = Session::establish(
+            without,
+            &ssh_target("h"),
+            &eff("zsh"),
+            &env,
+            &[],
+            silent_progress(),
+        )
+        .await
+        .err()
+        .expect("no shell anywhere");
+        assert!(
+            matches!(err, SessionError::Shell(ShellError::NoBuild { .. })),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("has linux-aarch64"), "{err}");
+        // Still decided before anything is written (§FR-011).
+        assert!(
+            !log.lock().unwrap().iter().any(|c| c.contains("recv")),
+            "nothing delivered"
+        );
+        drop(_g);
         let _ = std::fs::remove_dir_all(&base);
     }
 }

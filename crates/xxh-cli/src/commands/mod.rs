@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod connect;
+pub mod doctor;
 pub mod plugin;
 pub mod remote_env;
 pub mod target_io;

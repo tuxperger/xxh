@@ -87,6 +87,20 @@ impl Component {
         })
     }
 
+    /// Roughly how much space the component takes once unpacked on a host: the
+    /// file sizes of its tree, or the archive length for an already packed one
+    /// (generated components are tiny). Used by the space check (006 research R3).
+    pub fn size_hint(&self) -> Result<u64, ShellError> {
+        match &self.source {
+            Source::Packed(bytes) => Ok(bytes.len() as u64),
+            Source::Dir(dir) => Ok(entries(dir)?
+                .iter()
+                .filter(|e| !e.is_dir)
+                .map(|e| std::fs::metadata(&e.path).map_or(0, |m| m.len()))
+                .sum()),
+        }
+    }
+
     /// Name the component for reports (005 T005).
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
@@ -479,6 +493,19 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&run.stdout), "tool\n");
+    }
+
+    #[test]
+    fn size_hint_counts_file_bytes() {
+        let d = fixture_dir();
+        let c = Component::pack_dir(ComponentKind::Plugin, d.path(), "gz").unwrap();
+        let files = b"echo hi\n".len() + b"#!/bin/sh\necho tool\n".len();
+        assert_eq!(c.size_hint().unwrap(), files as u64);
+        let eager = Component::pack_dir_eager(ComponentKind::Plugin, d.path(), "gz").unwrap();
+        assert_eq!(
+            eager.size_hint().unwrap(),
+            eager.payload().unwrap().len() as u64
+        );
     }
 
     #[test]

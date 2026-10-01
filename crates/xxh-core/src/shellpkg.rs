@@ -33,13 +33,22 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Find a package providing `shell` with a payload for `platform`.
-///
-/// `Ok(None)` means "no package" (the caller may still find the shell on the
-/// host); a present-but-broken manifest is a [`ShellError`] so the user learns
-/// why their package was skipped.
-pub fn find(shell: &str, platform: &Platform) -> Result<Option<ShellPackage>, ShellError> {
-    let target = platform.target_key();
+/// What the search path knows about a shell for one platform (006 research R4).
+#[derive(Debug, Clone)]
+pub enum ShellLookup {
+    /// A package with a build for the platform.
+    Found(ShellPackage),
+    /// A package exists but has no build for the platform; `available` lists the
+    /// platforms it does have (`linux-x86_64`, …) — usually its fetch.sh was not
+    /// run for this one.
+    NoBuild { available: Vec<String> },
+    /// No package provides the shell.
+    NotInstalled,
+}
+
+/// Every installed package providing `shell`, with its directory.
+fn packages(shell: &str) -> Result<Vec<(Manifest, PathBuf)>, ShellError> {
+    let mut out = Vec::new();
     for base in search_dirs() {
         let dir = base.join(shell);
         let manifest_path = dir.join("manifest.toml");
@@ -50,25 +59,68 @@ pub fn find(shell: &str, platform: &Platform) -> Result<Option<ShellPackage>, Sh
             .map_err(|e| ShellError::Other(format!("{}: {e}", manifest_path.display())))?;
         let manifest = Manifest::parse(&text)
             .map_err(|e| ShellError::Other(format!("{}: {e}", manifest_path.display())))?;
-        if !manifest.provides_shell(shell) {
-            continue;
+        if manifest.provides_shell(shell) {
+            out.push((manifest, dir));
         }
+    }
+    Ok(out)
+}
+
+/// The platforms installed packages of `shell` have builds for (`linux-x86_64`, …),
+/// sorted; `None` when no package provides the shell at all.
+pub fn available_targets(shell: &str) -> Result<Option<Vec<String>>, ShellError> {
+    let pkgs = packages(shell)?;
+    if pkgs.is_empty() {
+        return Ok(None);
+    }
+    let mut targets = Vec::new();
+    for (_, dir) in pkgs {
+        let Ok(entries) = std::fs::read_dir(dir.join("dist")) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if e.path().join("bin").join(shell).is_file() {
+                targets.push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    Ok(Some(targets))
+}
+
+/// Look `shell` up for `platform`. A present-but-broken manifest is a
+/// [`ShellError`] so the user learns why their package was skipped.
+pub fn lookup(shell: &str, platform: &Platform) -> Result<ShellLookup, ShellError> {
+    let target = platform.target_key();
+    let pkgs = packages(shell)?;
+    if pkgs.is_empty() {
+        return Ok(ShellLookup::NotInstalled);
+    }
+    for (manifest, dir) in pkgs {
         let tree = dir.join("dist").join(&target);
-        let bin = tree.join("bin").join(shell);
-        if bin.is_file() {
-            return Ok(Some(ShellPackage {
+        if tree.join("bin").join(shell).is_file() {
+            return Ok(ShellLookup::Found(ShellPackage {
                 manifest,
                 tree,
                 bin_rel: format!("bin/{shell}"),
             }));
         }
-        tracing::debug!(
-            shell,
-            target,
-            "shell package found but has no payload for this platform (run its fetch.sh)"
-        );
     }
-    Ok(None)
+    Ok(ShellLookup::NoBuild {
+        available: available_targets(shell)?.unwrap_or_default(),
+    })
+}
+
+/// Find a package providing `shell` with a payload for `platform`.
+///
+/// `Ok(None)` means "no usable package" (the caller may still find the shell on
+/// the host); [`lookup`] tells a missing package from a missing build.
+pub fn find(shell: &str, platform: &Platform) -> Result<Option<ShellPackage>, ShellError> {
+    Ok(match lookup(shell, platform)? {
+        ShellLookup::Found(pkg) => Some(pkg),
+        ShellLookup::NoBuild { .. } | ShellLookup::NotInstalled => None,
+    })
 }
 
 /// Test-only serialisation of `XXH_SHELLS_DIR`: the variable is process-wide,
@@ -156,6 +208,42 @@ mod tests {
             find("fish", &linux_x86()).unwrap()
         };
         assert!(found.is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A missing package and a package without this platform's build are told
+    /// apart, and the builds it has are listed (006 T001, §FR-009).
+    #[test]
+    fn lookup_tells_missing_package_from_missing_build() {
+        let base = std::env::temp_dir().join(format!("xxh-shellpkg-lk-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        make_pkg(&base, "zsh", true);
+        make_pkg(&base, "fish", false);
+        let arm = Platform::parse_detect("Linux aarch64 | tar gzip").unwrap();
+        let _g = super::testenv::shells_dir(&base);
+
+        assert!(matches!(
+            lookup("zsh", &linux_x86()).unwrap(),
+            ShellLookup::Found(_)
+        ));
+        match lookup("zsh", &arm).unwrap() {
+            ShellLookup::NoBuild { available } => assert_eq!(available, ["linux-x86_64"]),
+            other => panic!("{other:?}"),
+        }
+        match lookup("fish", &linux_x86()).unwrap() {
+            ShellLookup::NoBuild { available } => assert!(available.is_empty()),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            lookup("nu", &linux_x86()).unwrap(),
+            ShellLookup::NotInstalled
+        ));
+        assert_eq!(
+            available_targets("zsh").unwrap(),
+            Some(vec!["linux-x86_64".to_string()])
+        );
+        assert_eq!(available_targets("nu").unwrap(), None);
+        drop(_g);
         let _ = std::fs::remove_dir_all(&base);
     }
 }

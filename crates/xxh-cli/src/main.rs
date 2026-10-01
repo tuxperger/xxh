@@ -31,6 +31,8 @@ mod exit {
     /// `xxh clean` refused (live sessions) or left something behind (005 C-C2/C-C4).
     pub const TARGET: u8 = 50;
     pub const USAGE: u8 = 2;
+    /// `xxh doctor` found at least one failed check (006 C-D6).
+    pub const FAILED_CHECKS: u8 = 1;
 }
 
 /// Map each error class to its class name and exit code (T005/T043, §FR-026).
@@ -132,6 +134,15 @@ enum Command {
     Status {
         /// Target, as for a login.
         target: String,
+        /// Print one JSON object instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find what would stop a login, without changing anything: checks of this
+    /// machine and, given a target, of the target.
+    Doctor {
+        /// Target to diagnose as well, as for a login.
+        target: Option<String>,
         /// Print one JSON object instead of text.
         #[arg(long)]
         json: bool,
@@ -270,6 +281,7 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
             }
         }
         Some(Command::Status { target, json }) => run_status(target, *json, cli),
+        Some(Command::Doctor { target, json }) => run_doctor(target.as_deref(), *json, cli),
         Some(Command::Clean {
             target,
             force,
@@ -368,6 +380,75 @@ fn run_clean(raw_target: &str, force: bool, stale: bool, cli: &Cli) -> u8 {
             report(class, &e, code)
         }
     }
+}
+
+/// `xxh doctor` (006, C-D6): 0 without failures, 1 with any, 10 when the target
+/// cannot be reached — the client half is printed in every case.
+fn run_doctor(raw_target: Option<&str>, json: bool, cli: &Cli) -> u8 {
+    use commands::doctor::{self, ClientEnv, DoctorReport};
+
+    let cfg = commands::config::load();
+    let (eff, resolved) = match (&cfg, raw_target) {
+        (Ok(cfg), Some(raw)) => {
+            let parsed = match target::parse(raw) {
+                Ok(p) => p,
+                Err(e) => return report("config", &e, exit::CONFIG),
+            };
+            let flags = CliTargetFlags {
+                identity_set: cli.identity.is_some(),
+                transport_set: cli.transport.is_some(),
+                runtime_set: cli.runtime.is_some(),
+            };
+            if let Err(e) = target::validate_flags(&parsed, &flags) {
+                return report("config", &e, exit::CONFIG);
+            }
+            match resolve_target(cfg, cli, parsed) {
+                Ok((eff, t)) => (Ok(eff), Some(t)),
+                Err(e) => return report("config", &e, exit::CONFIG),
+            }
+        }
+        (Ok(cfg), None) => (Ok(cfg.resolve("", &cli_overrides(cli))), None),
+        (Err(e), _) => (Err(e.to_string()), None),
+    };
+    let env = ClientEnv {
+        config: eff.clone(),
+        registry: xxh_plugins::registry::Registry::open_default().map_err(|e| e.to_string()),
+        path: std::env::var_os("PATH"),
+    };
+    let (client, plugins) = doctor::client_checks(&env);
+    let mut code = exit::OK;
+    let target = match (eff, resolved) {
+        (Ok(eff), Some(t)) => {
+            let label = t.label().to_string();
+            let rt = match Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => return report("transport", &e, exit::TRANSPORT),
+            };
+            let progress = commands::connect::progress(verbosity(cli) == Verbosity::Normal);
+            match rt.block_on(doctor::target_report(t, &eff, &plugins, progress)) {
+                Ok(r) => Some(r),
+                Err(e @ SessionError::Transport(_)) => {
+                    code = exit::TRANSPORT;
+                    Some(doctor::unreachable(&label, &e))
+                }
+                Err(e) => {
+                    let (class, c) = classify(&e);
+                    return report(class, &e, c);
+                }
+            }
+        }
+        _ => None,
+    };
+    let report = DoctorReport { client, target };
+    if json {
+        println!("{}", doctor::json(&report));
+    } else {
+        print!("{}", doctor::render(&report));
+    }
+    if code == exit::OK && report.failed() {
+        code = exit::FAILED_CHECKS;
+    }
+    code
 }
 
 fn run_connect(raw_target: &str, cli: &Cli, exec: Option<ExecRequest>) -> u8 {
@@ -536,5 +617,23 @@ mod tests {
             request(&["xxh", "-c", "x", "status", "web"], false).is_err(),
             "with a subcommand"
         );
+    }
+
+    /// `doctor` works with and without a target (006 T009).
+    #[test]
+    fn doctor_parses_with_and_without_target() {
+        let cli = Cli::try_parse_from(["xxh", "doctor"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor {
+                target: None,
+                json: false
+            })
+        ));
+        let cli = Cli::try_parse_from(["xxh", "doctor", "web", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor { target: Some(ref t), json: true }) if t == "web"
+        ));
     }
 }

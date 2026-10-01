@@ -1,4 +1,9 @@
-#!/bin/sh
+        # Parsed with `read`: awk is not part of the host contract.
+        _free=$(df -Pk "$_where" 2>/dev/null | {
+            read -r _hdr || true
+            read -r _fs _blocks _used _avail _rest || true
+            printf '%s' "${_avail:-}"
+        } || true)#!/bin/sh
 # xxh host bootstrap — minimal POSIX sh, no bashisms, no root, no package manager.
 # Embedded into the client via include_str! and executed over the SSH session.
 # Contract: contracts/bootstrap-protocol.md. Принципы I (zero-footprint), V, VI.
@@ -20,8 +25,10 @@
 #   clean <force>          -> remove every environment root (refused while a
 #                             session is active unless force=1)
 #   prune <force> <hash>.. -> remove cached components not in the given list
+#   probe                  -> report tools, the root a login would use and the
+#                             free space there, writing nothing (006)
 #
-# status/clean/prune are only ever streamed (`sh -s -- status`) and never create
+# status/clean/prune/probe are only ever streamed (`sh -s -- status`) and never create
 # anything — not even the root (005 contracts/bootstrap-status-clean.md).
 #
 # Exit status is deliberately coarse; the client maps richer error classes.
@@ -339,6 +346,47 @@ xxh_prune() {
     exit "$XXH_RC"
 }
 
+# --- Diagnostics: probe (006, contracts/bootstrap-probe.md) -----------------
+
+# Report what a login needs from the host without writing anything (C-P1):
+# required and optional tools, the root `xxh_resolve_root` would pick — judged
+# by write permission instead of `mkdir` (C-P3) — and the free space there.
+xxh_probe() {
+    for _t in sh cat mkdir chmod tar gzip zstd du df; do
+        _p=$(command -v "$_t" 2>/dev/null || true)
+        printf 'tool\t%s\t%s\n' "$_t" "${_p:--}"
+    done
+    _where=""
+    for _base in "${HOME:-}" "${TMPDIR:-}" /tmp; do
+        [ -n "$_base" ] || continue
+        _cand="${_base%/}/.xxh"
+        if [ -d "$_cand" ]; then
+            if [ -w "$_cand" ]; then
+                printf 'root\texisting\t%s\n' "$_cand"
+                _where=$_cand
+                break
+            fi
+        elif [ -d "$_base" ] && [ -w "$_base" ]; then
+            printf 'root\tnew\t%s\n' "$_cand"
+            _where=$_base
+            break
+        fi
+    done
+    [ -n "$_where" ] || printf 'root\t-\n'
+    _free=""
+    if [ -n "$_where" ] && command -v df >/dev/null 2>&1; then
+        # POSIX `df -P`: the 4th field of the data line is the available KiB.
+        # Parsed with `read`: awk is not part of the host contract.
+        _free=$(df -Pk "$_where" 2>/dev/null | {
+            read -r _hdr || true
+            read -r _fs _blocks _used _avail _rest || true
+            printf '%s' "${_avail:-}"
+        } || true)
+        case "$_free" in '' | *[!0-9]*) _free="" ;; esac
+    fi
+    printf 'free\t%s\n' "${_free:--}"
+}
+
 _cmd="${1:-}"
 [ "$#" -gt 0 ] && shift || true
 case "$_cmd" in
@@ -351,5 +399,6 @@ case "$_cmd" in
     status)     xxh_for_each_root xxh_status_one ;;
     clean)      xxh_clean "$@" ;;
     prune)      xxh_prune "$@" ;;
+    probe)      xxh_probe ;;
     *)          echo "xxh-bootstrap: unknown subcommand '$_cmd'" >&2; exit 2 ;;
 esac

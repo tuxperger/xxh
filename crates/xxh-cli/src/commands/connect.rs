@@ -51,6 +51,10 @@ pub async fn run(
     let plugins = crate::commands::plugin::session_plugins(eff)?;
 
     let mut session = Session::establish(transport, &target, eff, &env, &plugins, progress).await?;
+    // Notes are warnings, not stages: shown even when progress is silent (006 C-D7).
+    for note in session.notes() {
+        eprintln!("xxh: note: {note}");
+    }
     let code = match exec {
         // One command, stdio attached; the same remote trap cleans up on exit.
         Some((cmd, tty)) => session.run_exec(cmd, *tty).await?,

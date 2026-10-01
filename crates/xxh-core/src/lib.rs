@@ -4,6 +4,7 @@
 //! deploy/bootstrap/cleanup/session modules follow in US1 (T015–T018).
 
 pub mod deploy;
+pub mod doctor;
 pub mod platform;
 pub mod remote_env;
 pub mod session;
@@ -24,6 +25,19 @@ pub enum ShellError {
          add a plugin providing it, or pick another shell with --shell"
     )]
     NotAvailable(String),
+    /// A package provides the shell, but not for this platform, and the host has
+    /// no such shell either (006 §FR-009, C-D8).
+    #[error(
+        "the {shell} package has no build for {target} ({}) and the host has no {shell}; \
+         fetch the {target} build of the package (its fetch.sh) or pick another shell \
+         with --shell",
+        if available.is_empty() { "no builds yet".to_string() } else { format!("has {}", available.join(", ")) }
+    )]
+    NoBuild {
+        shell: String,
+        target: String,
+        available: Vec<String>,
+    },
     /// Generic delivery/assembly failure.
     #[error("shell error: {0}")]
     Other(String),
