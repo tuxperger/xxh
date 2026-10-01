@@ -190,13 +190,13 @@ fn shell_check(shell: &str) -> Check {
         Ok(Some(_)) => Check::warn(
             "shell",
             format!("the {shell} package has no builds yet: the target's own {shell} is needed"),
-            format!("run the {shell} package's fetch.sh for the platforms you log into"),
+            format!("fetch builds with `xxh shell fetch {shell}`"),
         ),
         Ok(None) => Check::warn(
             "shell",
             format!("no {shell} package installed: only targets that have {shell} will work"),
             format!(
-                "install a {shell} shell package into ~/.local/share/xxh/shells to bring \
+                "install a package for it with `xxh shell add <source>` to bring \
                  {shell} along"
             ),
         ),

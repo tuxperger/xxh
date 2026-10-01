@@ -272,13 +272,14 @@ impl<T: Transport> Session<T> {
             // way, not just in the debug log (006 §FR-009, C-D7/C-D8).
             match (probe.exit_code == 0, missing_build) {
                 (true, Some(available)) => notes.push(format!(
-                    "the {name} package has no build for {} ({}); using the host's {name}",
-                    platform.target_key(),
+                    "the {name} package has no build for {t} ({}); using the host's {name} \
+                     (`xxh shell fetch {name} --platform {t}` brings the package's)",
                     if available.is_empty() {
                         "no builds yet".to_string()
                     } else {
                         format!("has {}", available.join(", "))
-                    }
+                    },
+                    t = platform.target_key(),
                 )),
                 (true, None) => {}
                 (false, Some(available)) => {

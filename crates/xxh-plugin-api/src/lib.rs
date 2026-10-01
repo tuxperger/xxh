@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// The plugin-contract version this client implements. A plugin is accepted when its
 /// `api_version` has the same major and a minor `<=` this one (C-M1).
-pub const API_VERSION: Version = Version::new(1, 0, 0);
+/// 1.1.0 (008): optional `builds` and the `post_fetch` hook stage.
+pub const API_VERSION: Version = Version::new(1, 1, 0);
 
 /// Error class for plugin problems. Maps to CLI exit code 30 (§FR-026).
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +44,9 @@ pub enum LifecycleStage {
     PreConnect,
     PostDeploy,
     PreExit,
+    /// After a shell build is unpacked on the client, before it becomes
+    /// visible (008 C-B5). A failure rejects the build.
+    PostFetch,
 }
 
 /// A declared lifecycle hook (run as an isolated subprocess; C-M3).
@@ -74,6 +78,41 @@ pub struct Manifest {
     pub provides: BTreeMap<String, String>,
     #[serde(default)]
     pub priority: i32,
+    /// Per-platform builds of a shell package, keyed `os-arch` (008 C-B1).
+    #[serde(default)]
+    pub builds: BTreeMap<String, BuildSpec>,
+}
+
+/// Where to get one platform's build of a shell package and how to check it
+/// (008 contracts/shell-package-builds.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildSpec {
+    /// `https://` or `file://` address of a tar archive (gzip/zstd allowed).
+    pub url: String,
+    /// SHA-256 of the archive, lowercase hex.
+    pub sha256: String,
+    /// Leading path components to drop when unpacking.
+    #[serde(default)]
+    pub strip: u32,
+}
+
+impl BuildSpec {
+    /// C-B1: a usable scheme and a well-formed checksum.
+    pub fn check(&self, platform: &str) -> Result<(), PluginError> {
+        let bad = |what: &str| PluginError::Manifest(format!("builds.{platform}: {what}"));
+        if !(self.url.starts_with("https://") || self.url.starts_with("file://")) {
+            return Err(bad("url must start with https:// or file://"));
+        }
+        if self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(bad("sha256 must be 64 lowercase hex digits"));
+        }
+        Ok(())
+    }
 }
 
 impl Manifest {
@@ -209,5 +248,38 @@ mod tests {
         assert!(m.supports("linux", "x86_64", "musl")); // linux/*/musl
         assert!(!m.supports("darwin", "x86_64", "unknown"));
         assert!(!m.supports("linux", "x86_64", "glibc"));
+    }
+
+    /// 008 T001: builds parse with a default `strip`, are checked, and old
+    /// manifests without them still parse.
+    #[test]
+    fn shell_builds_are_parsed_and_checked() {
+        let m = Manifest::parse(
+            "name = \"zsh\"\nversion = \"5.8.0\"\napi_version = \"1.1.0\"\n\
+             [builds.linux-x86_64]\nurl = \"https://e.org/z.tgz\"\n\
+             sha256 = \"6df668fb6e9a12874e0d80518d582f2e99e512d4a4532fa73d938360aaddc838\"\n\
+             [builds.linux-aarch64]\nurl = \"file:///tmp/z.tgz\"\nsha256 = \"00\"\nstrip = 1\n\
+             [hooks.post_fetch]\nrun = \"hooks/post-fetch.sh\"\n",
+        )
+        .unwrap();
+        m.check_api().unwrap();
+        let x86 = &m.builds["linux-x86_64"];
+        assert_eq!(x86.strip, 0);
+        x86.check("linux-x86_64").unwrap();
+        let arm = &m.builds["linux-aarch64"];
+        assert_eq!(arm.strip, 1);
+        assert!(arm.check("linux-aarch64").is_err(), "short sha256");
+        assert!(m.hooks.contains_key(&LifecycleStage::PostFetch));
+
+        let http = BuildSpec {
+            url: "http://e.org/z.tgz".into(),
+            sha256: x86.sha256.clone(),
+            strip: 0,
+        };
+        assert!(http.check("p").is_err(), "plain http is refused");
+
+        let old = Manifest::parse(SAMPLE).unwrap();
+        assert!(old.builds.is_empty());
+        old.check_api().unwrap();
     }
 }

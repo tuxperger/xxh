@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod platform;
 pub mod remote_env;
 pub mod session;
+pub mod shellmgr;
 pub mod shellpkg;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,16 +22,16 @@ pub enum ShellError {
     /// Requested shell is not available in the environment/cache (§FR-011).
     #[error(
         "shell `{0}` is neither packaged locally nor present on the host; \
-         install a shell package (e.g. xxh-shell-zsh) into ~/.local/share/xxh/shells, \
-         add a plugin providing it, or pick another shell with --shell"
+         install a package for it with `xxh shell add <source>`, or pick another shell \
+         with --shell"
     )]
     NotAvailable(String),
     /// A package provides the shell, but not for this platform, and the host has
     /// no such shell either (006 §FR-009, C-D8).
     #[error(
         "the {shell} package has no build for {target} ({}) and the host has no {shell}; \
-         fetch the {target} build of the package (its fetch.sh) or pick another shell \
-         with --shell",
+         fetch it with `xxh shell fetch {shell} --platform {target}` or pick another \
+         shell with --shell",
         if available.is_empty() { "no builds yet".to_string() } else { format!("has {}", available.join(", ")) }
     )]
     NoBuild {
@@ -38,6 +39,9 @@ pub enum ShellError {
         target: String,
         available: Vec<String>,
     },
+    /// Installing, fetching or removing a shell package failed (008 §FR-010).
+    #[error("shell package: {0}")]
+    Package(String),
     /// Generic delivery/assembly failure.
     #[error("shell error: {0}")]
     Other(String),

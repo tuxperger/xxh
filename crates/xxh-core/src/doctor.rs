@@ -241,13 +241,13 @@ pub fn shell_check(shell: &str, target: &str, lookup: &ShellLookup, host_has: bo
                 "{}; the target's own {shell} will be used",
                 fetch(available)
             ),
-            format!("fetch the {target} build of the {shell} package (its fetch.sh)"),
+            format!("fetch it with `xxh shell fetch {shell} --platform {target}`"),
         ),
         (ShellLookup::NoBuild { available }, false) => Check::fail(
             "shell",
             format!("{}, and the target has no {shell}", fetch(available)),
             format!(
-                "fetch the {target} build of the {shell} package (its fetch.sh), \
+                "fetch it with `xxh shell fetch {shell} --platform {target}`, \
                  or pick another shell with --shell"
             ),
         ),
@@ -257,10 +257,8 @@ pub fn shell_check(shell: &str, target: &str, lookup: &ShellLookup, host_has: bo
         (ShellLookup::NotInstalled, false) => Check::fail(
             "shell",
             format!("{shell} is neither packaged on this machine nor present on the target"),
-            format!(
-                "install a {shell} shell package into ~/.local/share/xxh/shells, \
-                 or pick another shell with --shell"
-            ),
+            "install a package for it with `xxh shell add <source>`, \
+             or pick another shell with --shell",
         ),
     }
 }

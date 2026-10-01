@@ -5,4 +5,5 @@ pub mod connect;
 pub mod doctor;
 pub mod plugin;
 pub mod remote_env;
+pub mod shell;
 pub mod target_io;

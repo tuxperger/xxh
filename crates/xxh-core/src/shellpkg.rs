@@ -22,7 +22,15 @@ pub struct ShellPackage {
     pub bin_rel: String,
 }
 
-fn search_dirs() -> Vec<PathBuf> {
+/// Where `xxh shell add` installs: the first directory of the search path
+/// (008 research R5).
+pub fn install_dir() -> Result<PathBuf, ShellError> {
+    search_dirs().into_iter().next().ok_or_else(|| {
+        ShellError::Package("cannot determine the shells directory (set XXH_SHELLS_DIR)".into())
+    })
+}
+
+pub(crate) fn search_dirs() -> Vec<PathBuf> {
     if let Ok(v) = std::env::var("XXH_SHELLS_DIR") {
         return std::env::split_paths(&v).collect();
     }
@@ -51,7 +59,7 @@ fn packages(shell: &str) -> Result<Vec<(Manifest, PathBuf)>, ShellError> {
     let mut out = Vec::new();
     for base in search_dirs() {
         let dir = base.join(shell);
-        let manifest_path = dir.join("manifest.toml");
+        let manifest_path = xxh_plugins::source::manifest_path(&dir);
         if !manifest_path.is_file() {
             continue;
         }
@@ -64,6 +72,20 @@ fn packages(shell: &str) -> Result<Vec<(Manifest, PathBuf)>, ShellError> {
         }
     }
     Ok(out)
+}
+
+/// Platforms with a usable build in one package directory, sorted (008).
+pub fn builds_in(dir: &std::path::Path, shell: &str) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir.join("dist"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| e.path().join("bin").join(shell).is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out
 }
 
 /// The platforms installed packages of `shell` have builds for (`linux-x86_64`, …),
@@ -79,6 +101,10 @@ pub fn available_targets(shell: &str) -> Result<Option<Vec<String>>, ShellError>
             continue;
         };
         for e in entries.flatten() {
+            // `.tmp-…`: a build still being installed is not a build (008 C-B6).
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             if e.path().join("bin").join(shell).is_file() {
                 targets.push(e.file_name().to_string_lossy().into_owned());
             }

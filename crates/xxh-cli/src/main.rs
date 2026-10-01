@@ -130,6 +130,11 @@ enum Command {
         #[command(subcommand)]
         action: PluginAction,
     },
+    /// Manage shell packages (add/fetch/list/update/remove).
+    Shell {
+        #[command(subcommand)]
+        action: commands::shell::ShellAction,
+    },
     /// Show what xxh left on a target: kept environment, sessions, components.
     Status {
         /// Target, as for a login.
@@ -278,6 +283,16 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
                 Ok(()) => exit::OK,
                 Err(PluginCmdError::Plugin(e)) => report("plugin", &e, exit::PLUGIN),
                 Err(PluginCmdError::Config(e)) => report("config", &e, exit::CONFIG),
+            }
+        }
+        Some(Command::Shell { action }) => {
+            let rt = match Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => return report("transport", &e, exit::TRANSPORT),
+            };
+            match rt.block_on(commands::shell::run(action)) {
+                Ok(()) => exit::OK,
+                Err(e) => report("shell", &e, exit::SHELL),
             }
         }
         Some(Command::Status { target, json }) => run_status(target, *json, cli),

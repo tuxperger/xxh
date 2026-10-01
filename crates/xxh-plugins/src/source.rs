@@ -312,9 +312,20 @@ pub fn provider_for(spec: &SourceSpec) -> Result<Box<dyn PackageSource>, PluginE
     }
 }
 
-/// Read and validate a `plugin.toml` in `dir` (api-version check, C-M1).
+/// The manifest file of the package in `dir` (008 C-B7).
+pub fn manifest_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let plugin = dir.join("plugin.toml");
+    if plugin.is_file() {
+        return plugin;
+    }
+    let shell = dir.join("manifest.toml");
+    if shell.is_file() { shell } else { plugin }
+}
+
+/// Read and validate the manifest in `dir` (api-version check, C-M1):
+/// `plugin.toml`, or `manifest.toml` as existing shell packages name it (008 C-B7).
 pub fn read_manifest(dir: &std::path::Path) -> Result<Manifest, PluginError> {
-    let path = dir.join("plugin.toml");
+    let path = manifest_path(dir);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| PluginError::Manifest(format!("{}: {e}", path.display())))?;
     let manifest = Manifest::parse(&text)?;
@@ -526,5 +537,20 @@ mod tests {
             provider_for(&spec),
             Err(PluginError::SourceUnavailable(_))
         ));
+    }
+
+    /// Shell packages name their manifest `manifest.toml`; `plugin.toml` wins
+    /// when both exist (008 C-B7).
+    #[test]
+    fn manifest_file_falls_back_to_manifest_toml() {
+        let dir = std::env::temp_dir().join(format!("xxh-mf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text =
+            |n: &str| format!("name = \"{n}\"\nversion = \"1.0.0\"\napi_version = \"1.0.0\"\n");
+        std::fs::write(dir.join("manifest.toml"), text("shell")).unwrap();
+        assert_eq!(read_manifest(&dir).unwrap().name, "shell");
+        std::fs::write(dir.join("plugin.toml"), text("plugin")).unwrap();
+        assert_eq!(read_manifest(&dir).unwrap().name, "plugin");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
