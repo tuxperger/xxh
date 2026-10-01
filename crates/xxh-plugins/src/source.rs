@@ -270,6 +270,9 @@ pub struct FetchedPackage {
     /// provider reports a pin it resolved during the fetch (C-F18). `None` keeps
     /// the requested spec.
     pub resolved: Option<SourceSpec>,
+    /// The git commit the package came from, for git sources — what the lock
+    /// file pins (013 research R3).
+    pub revision: Option<String>,
 }
 
 /// A way of obtaining plugin packages (Принцип IX). All errors are class

@@ -12,20 +12,20 @@
 
 ## Phase 1: Foundational
 
-- [ ] T001 [P] `crates/xxh-config/src/lib.rs`: `Config.plugins` и `Config.shells`
+- [X] T001 [P] `crates/xxh-config/src/lib.rs`: `Config.plugins` и `Config.shells`
   (`BTreeMap<String, Declared { source }>`), unit-тест разбора; регенерация
   `nix/config-schema.json`
-- [ ] T002 [P] `crates/xxh-plugins/src/fetch.rs`: перенести из `xxh-core::shellmgr`
+- [X] T002 [P] `crates/xxh-plugins/src/fetch.rs`: перенести из `xxh-core::shellmgr`
   `download`, `sha256_file`, `unpack` (с защитой C-B3) и `copy_tree`; `shellmgr`
   пользуется ими; тесты переезжают вместе с кодом
-- [ ] T003 [P] `crates/xxh-plugins/src/lock.rs`: `Lock { plugins, shells }`,
+- [X] T003 [P] `crates/xxh-plugins/src/lock.rs`: `Lock { plugins, shells }`,
   `LockEntry { source, revision, hash }`, `load(path)`, `save(path)` атомарно и
   детерминированно, `default_path()` (`XXH_LOCK_FILE` / каталог конфига);
   unit-тесты (round-trip, одинаковые байты)
-- [ ] T004 `crates/xxh-plugins/src/sources/git.rs`: ревизия (`rev-parse HEAD`) в
+- [X] T004 `crates/xxh-plugins/src/sources/git.rs`: ревизия (`rev-parse HEAD`) в
   `FetchedPackage.revision`; 40-hex ссылка — `fetch`+`checkout`; unit-тест на
   локальном репозитории (две ревизии, пин на первую)
-- [ ] T005 `crates/xxh-plugins/src/registry.rs`: `install_pinned(spec, pin,
+- [X] T005 `crates/xxh-plugins/src/registry.rs`: `install_pinned(spec, pin,
   expect_hash) -> Installed { manifest, hash, revision }` (индекс хранит исходный
   spec); сборки плагина (`[builds]`, платформа клиента) в `dist/` копии до хеша
   (C-L11); несовпадение `expect_hash` — ошибка без изменений; unit-тесты

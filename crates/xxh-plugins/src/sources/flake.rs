@@ -401,6 +401,7 @@ impl PackageSource for FlakeProvider {
                 revision,
                 name: name.clone(),
             }),
+            revision: None,
         })
     }
 }

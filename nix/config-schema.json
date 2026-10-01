@@ -46,6 +46,20 @@
         "null"
       ]
     },
+    "plugins": {
+      "description": "Plugins declared with their sources, keyed by plugin name (013 C-L1);\n`xxh sync` installs them. Enabling stays with `enabled_plugins`.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Declared"
+      }
+    },
+    "shells": {
+      "description": "Shell packages declared with their sources, keyed by shell name (013).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Declared"
+      }
+    },
     "transport": {
       "$ref": "#/$defs/TransportBackend",
       "default": "russh"
@@ -84,6 +98,18 @@
           "default": "auto"
         }
       }
+    },
+    "Declared": {
+      "description": "A plugin or shell package declared in the config (013 C-L1): its source is\nthe same string `xxh plugin add` accepts.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
+      ]
     },
     "HostOverride": {
       "description": "Per-host overrides applied on top of the global config (§FR-023).\n\nEvery field is optional; `None` means \"inherit the global value\". List-valued\nfields (`enabled_plugins`) **replace** the global list rather than merging\n(resolves analysis finding C4 — simple, predictable precedence).",

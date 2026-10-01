@@ -441,6 +441,7 @@ impl PackageSource for NixProvider {
             env: BTreeMap::new(), // env is carried in env.sh (sourced on the host)
             cleanup: None,        // the client nix-cache entry is reused (C-N4)
             resolved: None,
+            revision: None,
         })
     }
 }

@@ -146,6 +146,20 @@ pub struct Config {
     pub container: ContainerConfig,
     #[serde(default)]
     pub hosts: BTreeMap<String, HostOverride>,
+    /// Plugins declared with their sources, keyed by plugin name (013 C-L1);
+    /// `xxh sync` installs them. Enabling stays with `enabled_plugins`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, Declared>,
+    /// Shell packages declared with their sources, keyed by shell name (013).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shells: BTreeMap<String, Declared>,
+}
+
+/// A plugin or shell package declared in the config (013 C-L1): its source is
+/// the same string `xxh plugin add` accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Declared {
+    pub source: String,
 }
 
 impl Default for Config {
@@ -160,6 +174,8 @@ impl Default for Config {
             identity: None,
             container: ContainerConfig::default(),
             hosts: BTreeMap::new(),
+            plugins: BTreeMap::new(),
+            shells: BTreeMap::new(),
         }
     }
 }
@@ -333,6 +349,37 @@ fn expand_tilde(p: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 013 C-L1: declarations parse, round-trip, and are omitted when empty.
+    #[test]
+    fn plugins_and_shells_are_declared_with_sources() {
+        let c: Config = toml::from_str(
+            r#"
+            enabled_plugins = ["neovim"]
+            [plugins.neovim]
+            source = "git@github.com:me/xxh-plugin-neovim.git"
+            [plugins.nix-htop]
+            source = "nixpkgs:htop"
+            [shells.zsh]
+            source = "https://example.org/xxh-shell-zsh.git#v1"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.plugins.len(), 2);
+        assert_eq!(c.plugins["nix-htop"].source, "nixpkgs:htop");
+        assert_eq!(
+            c.shells["zsh"].source,
+            "https://example.org/xxh-shell-zsh.git#v1"
+        );
+        let back: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.plugins, c.plugins);
+        assert_eq!(back.shells, c.shells);
+        let plain = toml::to_string(&Config::default()).unwrap();
+        assert!(
+            !plain.contains("[plugins") && !plain.contains("[shells"),
+            "{plain}"
+        );
+    }
 
     #[test]
     fn defaults_are_applied_for_empty_config() {

@@ -3783,14 +3783,18 @@ dependencies = [
  "async-trait",
  "blake3",
  "directories",
+ "flate2",
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tar",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
  "xxh-plugin-api",
+ "zstd",
 ]
 
 [[package]]

@@ -8,7 +8,9 @@
 
 pub use xxh_plugin_api::{Manifest, PluginError};
 
+pub mod fetch;
 pub mod isolation;
+pub mod lock;
 pub mod registry;
 pub mod resolver;
 pub mod source;
