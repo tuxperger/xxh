@@ -303,8 +303,10 @@ impl<T: Transport> Session<T> {
         let keep = if self.keep { "1" } else { "0" };
         // bootstrap `run` installs the cleanup trap, then execs the given argv.
         // XXH_ROOT is pinned so the script targets exactly the resolved root.
+        // Set via `env`, not a bare assignment prefix: PTY transports prepend
+        // `exec`, which would treat `XXH_ROOT=…` as the command name.
         format!(
-            "XXH_ROOT={root} sh {root}/boot.sh run {} {keep} sh -c '{}exec {}'",
+            "env XXH_ROOT={root} sh {root}/boot.sh run {} {keep} sh -c '{}exec {}'",
             self.session_id,
             self.prelude.replace('\'', "'\\''"),
             shell_cmd.replace('\'', "'\\''"),
