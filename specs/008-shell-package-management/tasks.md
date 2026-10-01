@@ -85,18 +85,18 @@
 
 ## Phase 5: Polish
 
-- [ ] T016 Пакет `../xxh-shell-zsh`: `api_version = "1.1.0"`, `[builds.*]` с
+- [X] T016 Пакет `../xxh-shell-zsh`: `api_version = "1.1.0"`, `[builds.*]` с
   SHA-256 сборок zsh-bin v6.1.1 (`darwin-arm64` → ключ `darwin-aarch64`),
   `overlay/env.sh` (из `write_env_sh`), `hooks/post-fetch.sh` (переименование
   terminfo), README; проверить `xxh shell fetch zsh --platform linux-x86_64` на
   реальном пакете и вход в контейнер; коммит в том репозитории
-- [ ] T017 [P] `.github/workflows/integration.yml` (`shell_package` — в
+- [X] T017 [P] `.github/workflows/integration.yml` (`shell_package` — в
   контейнерный шаг), `README.md` (Usage, раздел про шеллы),
   `specs/001-portable-shell-over-ssh/contracts/cli-commands.md` и
   `plugin-manifest.md` (ссылка на C-B*)
-- [ ] T018 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine) и интеграцию на
+- [X] T018 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine) и интеграцию на
   debian
-- [ ] T019 В `specs/008-shell-package-management/spec.md` — `**Status**: Implemented`
+- [X] T019 В `specs/008-shell-package-management/spec.md` — `**Status**: Implemented`
 
 ---
 

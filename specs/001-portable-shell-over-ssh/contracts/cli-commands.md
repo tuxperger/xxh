@@ -25,6 +25,16 @@ xxh <host> [OPTIONS]
 `0` успех · `10` transport · `20` shell · `30` plugin · `40` config · `50` target
 (005: `clean` отказался из-за активных сессий или удалил не всё).
 
+## Пакеты шеллов (008)
+
+```
+xxh shell add <source> [--platform os-arch]... [--no-builds]
+xxh shell fetch <shell> [--platform os-arch]... [--all]
+xxh shell list | update [<shell>] | remove <shell>
+```
+
+Ошибки — класс shell (код 20). Контракт — `specs/008-shell-package-management/contracts/cli-shell.md`.
+
 ## Диагностика (006)
 
 ```

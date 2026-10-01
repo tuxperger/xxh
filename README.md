@@ -66,6 +66,11 @@ xxh <target> -- <command> [args…]   # exact arguments, no shell re-interpretat
 xxh <target> -c '<command line>'    # through your shell: pipes, redirections
 xxh <target> -t -- <command>        # with a terminal (full-screen programs)
 
+# Shells: install a package with its builds, fetch builds for more platforms
+xxh shell add <git-url | path> [--platform os-arch]... [--no-builds]
+xxh shell fetch <shell> [--platform os-arch]... [--all]
+xxh shell list | update [<shell>] | remove <shell>
+
 # Will a login work? Checks this machine and, read-only, the target
 xxh doctor [<target>] [--json]
 
@@ -154,6 +159,29 @@ returns. It is built for scripts:
   the cleanup and exits `130`/`143`.
 - With stdin redirected xxh never prompts: needing a password or key passphrase is
   a transport error, not a silent read of your input.
+
+### Shells
+
+Your shell travels as a package: a static, relocatable build per platform.
+
+```console
+$ xxh shell add https://github.com/<you>/xxh-shell-zsh.git
+installed zsh 5.8.0 (git …)
+  builds: linux-aarch64, linux-armv7l, linux-x86_64
+  not fetched: darwin-aarch64, darwin-x86_64
+$ xxh prod-web-3                      # zsh, even where the host has none
+```
+
+A shell package declares its builds in its manifest — for each `os-arch` the
+archive's URL and SHA-256. `xxh shell add` installs the package (from the same
+sources as plugins) with every Linux build; `xxh shell fetch zsh --platform …`
+adds more later. xxh downloads with `curl`, refuses an archive whose checksum
+does not match **before** unpacking it, refuses entries that would land outside
+the build, and makes a build visible only once it is complete — an interrupted
+download is never used. Packages live in `~/.local/share/xxh/shells/<shell>/`;
+one you link there by hand is listed too, and `xxh shell remove` only unlinks it.
+When a target's platform has no build, the login says which `xxh shell fetch`
+to run.
 
 ### Before the first login: `xxh doctor`
 
@@ -244,7 +272,7 @@ feature and Nix on the **client only** — `nixpkgs:<attr>`, built via `pkgsStat
 into a fully static tool delivered to hosts without Nix. With the same feature,
 `flake:<ref>[#<attr>]` takes a program or a ready-made plugin from **any flake** —
 see below. Shells themselves are
-plugins too (`provides.shell = "zsh"`). First-party packages live in their own
+plugins too (`provides.shell = "zsh"`), managed with `xxh shell` (see Shells). First-party packages live in their own
 repositories: `xxh-shell-zsh`, `xxh-plugin-zsh-prompt`, `xxh-plugin-neovim`.
 
 ### Plugins from a flake ⭐

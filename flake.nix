@@ -49,6 +49,9 @@
           inherit src;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.pkg-config ];
+          # Shell-build tests download `file://` archives with the client's curl
+          # (008 research R2), as `xxh shell fetch` does.
+          nativeCheckInputs = [ pkgs.curl ];
           # ⭐ nix-source: the CLI can build plugins from nixpkgs (pkgsStatic) when
           # the *client* has Nix; without Nix the source degrades to Unavailable.
           cargoExtraArgs = "--features nix-source";
