@@ -53,6 +53,39 @@ fn config_path() -> Result<std::path::PathBuf, PluginError> {
         .ok_or_else(|| PluginError::Other("cannot determine config directory".into()))
 }
 
+/// Change the lock file, if there is one and it can be written; a lock that
+/// is a symlink is managed elsewhere (Nix) and only gets a note (013 C-L8).
+fn edit_lock(f: impl FnOnce(&mut xxh_plugins::lock::Lock)) {
+    let Some(path) = Config::default_path().map(|c| xxh_plugins::lock::default_path(&c)) else {
+        return;
+    };
+    let Ok(mut lock) = xxh_plugins::lock::Lock::load(&path) else {
+        return;
+    };
+    let before = lock.clone();
+    f(&mut lock);
+    if lock == before {
+        return;
+    }
+    let managed = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+    if managed || lock.save(&path).is_err() {
+        eprintln!(
+            "xxh: note: the lock file {} cannot be written here; update it to:\n{}",
+            path.display(),
+            lock.render()
+        );
+    }
+}
+
+/// `name: 1.0.0 (abc123def456) → 1.1.0 (0123456789ab)` (013 C-L10).
+fn update_line(name: &str, from: (&str, Option<&str>), to: (&str, Option<&str>)) -> String {
+    let side = |(v, r): (&str, Option<&str>)| match r {
+        Some(r) => format!("{v} ({})", r.chars().take(12).collect::<String>()),
+        None => v.to_string(),
+    };
+    format!("{name}: {} → {}", side(from), side(to))
+}
+
 fn edit_config(f: impl FnOnce(&mut Config)) -> Result<(), PluginCmdError> {
     let path = config_path()?;
     let mut cfg = Config::load(&path)?;
@@ -99,6 +132,10 @@ pub async fn run(action: &PluginAction) -> Result<(), PluginCmdError> {
         }
         PluginAction::Remove { name } => {
             registry.remove(name)?;
+            // A removed plugin is no longer pinned (013 C-L10).
+            edit_lock(|l| {
+                l.plugins.remove(name);
+            });
             edit_config(|c| c.enabled_plugins.retain(|p| p != name))?;
             println!("removed {name}");
         }
@@ -118,9 +155,28 @@ pub async fn run(action: &PluginAction) -> Result<(), PluginCmdError> {
         }
         PluginAction::Update { name } => {
             let before = registry.entry(name)?;
-            let m = registry.update(name).await?;
+            let got = registry
+                .install_pinned(&before.source.unpinned(), None, None)
+                .await?;
+            let m = got.manifest.clone();
             let after = registry.entry(&m.name)?;
-            if after.source.is_flake() {
+            // A locked plugin moves its lock entry along and says from what to
+            // what (013 C-L10, §FR-007).
+            let mut moved = None;
+            edit_lock(|l| {
+                if let Some(e) = l.plugins.get_mut(name) {
+                    moved = Some(update_line(
+                        name,
+                        (&before.version, e.revision.as_deref()),
+                        (&after.version, got.revision.as_deref()),
+                    ));
+                    e.revision = got.revision.clone();
+                    e.hash = got.hash.clone();
+                }
+            });
+            if let Some(line) = moved {
+                println!("{line}");
+            } else if after.source.is_flake() {
                 // Pinned sources say which revision they moved from and to (C-FC5).
                 let (old, new) = (
                     before.source.short_revision(),
@@ -180,4 +236,25 @@ pub fn session_plugins(eff: &Effective) -> Result<Vec<SessionPlugin>, PluginErro
             .unwrap_or(usize::MAX)
     });
     Ok(plugins)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_lines_show_versions_and_revisions() {
+        assert_eq!(
+            update_line(
+                "p",
+                ("1.0.0", Some("abcdef0123456789")),
+                ("1.1.0", Some("0123"))
+            ),
+            "p: 1.0.0 (abcdef012345) → 1.1.0 (0123)"
+        );
+        assert_eq!(
+            update_line("q", ("1.0.0", None), ("1.0.0", None)),
+            "q: 1.0.0 → 1.0.0"
+        );
+    }
 }

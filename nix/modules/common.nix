@@ -62,6 +62,13 @@ let
       };
     };
   };
+  # A plugin or shell declared with its source (013 C-L1).
+  declared = types.submodule {
+    options.source = mkOption {
+      type = types.str;
+      description = "Where to get it — what `xxh plugin add` accepts (git URL, path, nixpkgs:<attr>, flake:…).";
+    };
+  };
 in
 rec {
   options = {
@@ -126,6 +133,38 @@ rec {
       default = { };
       description = "Per-host overrides applied on top of the global settings.";
     };
+
+    # 013: declared sources; `xxh sync` installs them at the versions the lock
+    # file pins. Enabling stays with enabledPlugins.
+    plugins = mkOption {
+      type = types.attrsOf declared;
+      default = { };
+      example = { neovim.source = "git@github.com:me/xxh-plugin-neovim.git"; };
+      description = "Plugins to install, by name, with their sources (config: [plugins.<name>]).";
+    };
+
+    shells = mkOption {
+      type = types.attrsOf declared;
+      default = { };
+      example = { zsh.source = "git@github.com:me/xxh-shell-zsh.git"; };
+      description = "Shell packages to install, by shell name, with their sources (config: [shells.<name>]).";
+    };
+
+    lockFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = ''
+        The xxh.lock to install from (keep it next to this configuration). When
+        null, `xxh sync` writes ~/.config/xxh/xxh.lock itself; copy it here to
+        pin the versions.
+      '';
+    };
+
+    syncOnActivation = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Run `xxh sync` when the configuration is activated (home-manager).";
+    };
   };
 
   # Render the canonical config.toml from an evaluated option set.
@@ -147,6 +186,10 @@ rec {
         identity = cfg.identity;
       } // lib.optionalAttrs (cfg.hosts != { }) {
         hosts = lib.mapAttrs (_: ho: dropNulls ho) cfg.hosts;
+      } // lib.optionalAttrs (cfg.plugins != { }) {
+        plugins = lib.mapAttrs (_: p: { inherit (p) source; }) cfg.plugins;
+      } // lib.optionalAttrs (cfg.shells != { }) {
+        shells = lib.mapAttrs (_: s: { inherit (s) source; }) cfg.shells;
       };
     in
     (pkgs.formats.toml { }).generate "xxh-config.toml" settings;

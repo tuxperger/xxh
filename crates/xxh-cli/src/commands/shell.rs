@@ -160,6 +160,8 @@ mod tests {
             linked,
             present: vec!["linux-x86_64".into()],
             missing: missing.iter().map(|s| s.to_string()).collect(),
+            hash: None,
+            revision: None,
         }
     }
 

@@ -34,17 +34,17 @@
 
 ## Phase 2: User Story 1 — То же окружение на другой машине (P1) 🎯 MVP
 
-- [ ] T006 [US1] `crates/xxh-core/src/shellmgr.rs`: `add_pinned(spec, pin,
+- [X] T006 [US1] `crates/xxh-core/src/shellmgr.rs`: `add_pinned(spec, pin,
   expect_hash)` — пин git, хеш пакета без `dist/` и состояния, исходный spec в
   состоянии; `crates/xxh-core/src/sync.rs`: `sync(config, lock_path)` по C-L4..C-L9
   — плагины через реестр, шеллы через `shellmgr`, отчёт по каждому объявлению,
   запись lock или печать при read-only
-- [ ] T007 [P] [US1] Unit-тесты `sync.rs` на временных реестре/каталоге
+- [X] T007 [P] [US1] Unit-тесты `sync.rs` на временных реестре/каталоге
   шеллов/lock: чистый клиент → установлено и записано; повтор → unchanged без
   загрузок; подменённый хеш → failed, установленное не тронуто; лишняя запись →
   удалена; read-only lock → печать
-- [ ] T008 [US1] `crates/xxh-cli`: команда `xxh sync` (код 0/30), вывод C-L9
-- [ ] T009 [US1] Интеграция `crates/xxh-cli/tests/plugin_sync.rs` (бинарь): чистый
+- [X] T008 [US1] `crates/xxh-cli`: команда `xxh sync` (код 0/30), вывод C-L9
+- [X] T009 [US1] Интеграция `crates/xxh-cli/tests/plugin_sync.rs` (бинарь): чистый
   клиент, конфиг с git (`file://` репозиторий) и локальным плагином и шеллом с
   `file://`-сборкой — `xxh sync` ставит, lock записан; повтор — `unchanged`; новый
   коммит в репозитории не подхватывается (пин); вход в контейнер с этими плагинами
@@ -54,17 +54,17 @@
 
 ## Phase 3: User Story 2 — Осознанное обновление (P2)
 
-- [ ] T010 [US2] `xxh plugin update` — отчёт `версия (ревизия) → версия (ревизия)`
+- [X] T010 [US2] `xxh plugin update` — отчёт `версия (ревизия) → версия (ревизия)`
   и обновление записи lock; `xxh plugin remove` — удаление записи (C-L10);
   unit-тест рендера отчёта
-- [ ] T011 [US2] Дополнить `plugin_sync.rs`: `plugin update` двигает git-плагин на
+- [X] T011 [US2] Дополнить `plugin_sync.rs`: `plugin update` двигает git-плагин на
   новый коммит и lock; возврат прежнего lock + `sync` — прежняя ревизия
 
 ---
 
 ## Phase 4: User Story 3 — Декларация через Nix-модуль (P3)
 
-- [ ] T012 [US3] `nix/modules/common.nix` (`plugins`, `shells`, `lockFile`,
+- [X] T012 [US3] `nix/modules/common.nix` (`plugins`, `shells`, `lockFile`,
   `syncOnActivation`, рендер), `home-manager.nix` (lock в `xdg.configFile`,
   `home.activation`), `nixos.nix` (те же опции; генерация `/etc/xxh/config.toml`),
   `tests/nix-modules/roundtrip.nix` — значения новых полей

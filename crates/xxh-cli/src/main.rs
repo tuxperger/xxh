@@ -140,6 +140,9 @@ enum Command {
         #[command(subcommand)]
         action: commands::shell::ShellAction,
     },
+    /// Install exactly the plugins and shells the config declares, at the
+    /// versions xxh.lock pins (writing it when they are new).
+    Sync,
     /// Show what xxh left on a target: kept environment, sessions, components.
     Status {
         /// Target, as for a login.
@@ -300,6 +303,7 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
                 Err(e) => report("shell", &e, exit::SHELL),
             }
         }
+        Some(Command::Sync) => run_sync(),
         Some(Command::Status { target, json }) => run_status(target, *json, cli),
         Some(Command::Doctor { target, json }) => run_doctor(target.as_deref(), *json, cli),
         Some(Command::Clean {
@@ -340,6 +344,41 @@ fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Ru
         resolve_target(&cfg, cli, parsed).map_err(|e| report("config", &e, exit::CONFIG))?;
     let rt = Runtime::new().map_err(|e| report("transport", &e, exit::TRANSPORT))?;
     Ok((eff, resolved, rt))
+}
+
+/// `xxh sync` (013 C-L9): 0 when every declaration is in place, 30 (plugin
+/// class) when one could not be.
+fn run_sync() -> u8 {
+    let cfg = match commands::config::load() {
+        Ok(c) => c,
+        Err(e) => return report("config", &e, exit::CONFIG),
+    };
+    let registry = match xxh_plugins::registry::Registry::open_default() {
+        Ok(r) => r,
+        Err(e) => return report("plugin", &e, exit::PLUGIN),
+    };
+    let Some(config_path) = xxh_config::Config::default_path() else {
+        return report(
+            "config",
+            &"cannot locate the config directory",
+            exit::CONFIG,
+        );
+    };
+    let lock_path = xxh_plugins::lock::default_path(&config_path);
+    let rt = match Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return report("transport", &e, exit::TRANSPORT),
+    };
+    match rt.block_on(xxh_core::sync::sync(&cfg, &registry, &lock_path)) {
+        Ok(r) => {
+            print!("{}", commands::sync::render(&r, &lock_path));
+            if let Some(text) = &r.lock_unwritable {
+                eprint!("{}", commands::sync::unwritable_notice(text, &lock_path));
+            }
+            if r.failed() { exit::PLUGIN } else { exit::OK }
+        }
+        Err(e) => report("plugin", &e, exit::PLUGIN),
+    }
 }
 
 /// Unix seconds now, for "last used … ago".

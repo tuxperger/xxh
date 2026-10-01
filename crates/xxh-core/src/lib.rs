@@ -11,6 +11,7 @@ pub mod remote_env;
 pub mod session;
 pub mod shellmgr;
 pub mod shellpkg;
+pub mod sync;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

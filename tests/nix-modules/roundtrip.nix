@@ -26,6 +26,9 @@ let
           hosts.web.connect_timeout_s = 5;
           hosts.web.user = "www";
           hosts.web.container_runtime = "docker";
+          plugins.alpha.source = "https://example.org/alpha.git#v1";
+          plugins.beta.source = "nixpkgs:htop";
+          shells.zsh.source = "/srv/xxh-shell-zsh";
         };
       }
     ];
@@ -60,6 +63,12 @@ pkgs.runCommand "xxh-nix-module-roundtrip" { nativeBuildInputs = [ xxh ]; } ''
   grep -q 'container_runtime = Docker' web.out
   grep -q 'user              = www' web.out
   grep -q 'identity          = /keys/global' web.out
+
+  # 013: declared sources reach the canonical file and parse (C-L12).
+  xxh config show > declared.out
+  grep -q 'plugins.alpha = https://example.org/alpha.git#v1' declared.out
+  grep -q 'plugins.beta = nixpkgs:htop' declared.out
+  grep -q 'shells.zsh = /srv/xxh-shell-zsh' declared.out
 
   echo "round-trip: module -> config.toml -> xxh-config parser OK"
   touch $out

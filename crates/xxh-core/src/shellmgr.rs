@@ -30,6 +30,13 @@ struct State {
     /// Platform → SHA-256 of the archive its build came from.
     #[serde(default)]
     builds: BTreeMap<String, String>,
+    /// Content hash of the package (without builds and this file), for the
+    /// lock file (013).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hash: Option<String>,
+    /// Git commit the package came from (013).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
 }
 
 fn err(msg: impl Into<String>) -> ShellError {
@@ -64,6 +71,9 @@ pub struct Installed {
     pub present: Vec<String>,
     /// Declared in the manifest but not fetched.
     pub missing: Vec<String>,
+    /// Package content hash and git commit recorded at install (013).
+    pub hash: Option<String>,
+    pub revision: Option<String>,
 }
 
 /// What `fetch` did per platform.
@@ -267,9 +277,39 @@ fn find(shell: &str) -> Result<(PathBuf, Manifest), ShellError> {
 
 /// `xxh shell add` (C-SH1).
 pub async fn add(spec: &SourceSpec, which: &Builds) -> Result<Installed, ShellError> {
-    let provider = provider_for(spec).map_err(|e| err(e.to_string()))?;
-    let fetched = provider.fetch(spec).await.map_err(|e| err(e.to_string()))?;
-    let result = install_package(spec, &fetched.dir, &fetched.manifest, which).await;
+    add_pinned(spec, None, None, which).await
+}
+
+/// `add` at git commit `pin`, refusing a package whose content hash is not
+/// `expect_hash` (013 C-L5). The state keeps `spec` itself, so `xxh shell
+/// update` still moves forward; the lock file holds the pin.
+pub async fn add_pinned(
+    spec: &SourceSpec,
+    pin: Option<&str>,
+    expect_hash: Option<&str>,
+    which: &Builds,
+) -> Result<Installed, ShellError> {
+    let fetch_spec = match (spec, pin) {
+        (SourceSpec::Git { url, .. }, Some(rev)) => SourceSpec::Git {
+            url: url.clone(),
+            reference: Some(rev.to_string()),
+        },
+        _ => spec.clone(),
+    };
+    let provider = provider_for(&fetch_spec).map_err(|e| err(e.to_string()))?;
+    let fetched = provider
+        .fetch(&fetch_spec)
+        .await
+        .map_err(|e| err(e.to_string()))?;
+    let result = install_package(
+        spec,
+        &fetched.dir,
+        &fetched.manifest,
+        which,
+        fetched.revision.clone(),
+        expect_hash,
+    )
+    .await;
     if let Some(tmp) = &fetched.cleanup {
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -281,6 +321,8 @@ async fn install_package(
     src: &Path,
     manifest: &Manifest,
     which: &Builds,
+    revision: Option<String>,
+    expect_hash: Option<&str>,
 ) -> Result<Installed, ShellError> {
     let shell = shell_of(manifest)?;
     for (p, b) in &manifest.builds {
@@ -295,6 +337,8 @@ async fn install_package(
     let mut state = State {
         source: Some(spec.clone()),
         builds: BTreeMap::new(),
+        hash: None,
+        revision,
     };
     let existing = std::fs::symlink_metadata(&dest).is_ok();
     if existing {
@@ -322,6 +366,15 @@ async fn install_package(
     let tmp = root.join(unique(&format!(".tmp-{shell}")));
     let staged = async {
         copy_tree(src, &tmp, &["dist", ".git", STATE_FILE])?;
+        // The package itself, builds aside, is what the lock file pins (013).
+        let hash = crate::deploy::tree_hash(&tmp)?;
+        if let Some(want) = expect_hash.filter(|w| *w != hash) {
+            return Err(err(format!(
+                "{shell} does not match the lock file (expected content {want}, got {hash}); \
+                 it was not installed"
+            )));
+        }
+        state.hash = Some(hash);
         if existing {
             // Keep the builds; drop those the new manifest no longer declares.
             let old_dist = dest.join("dist");
@@ -413,7 +466,15 @@ async fn add_keeping(spec: &SourceSpec, present: &[String]) -> Result<Installed,
         .filter(|p| fetched.manifest.builds.contains_key(*p))
         .cloned()
         .collect();
-    let result = install_package(spec, &fetched.dir, &fetched.manifest, &Builds::Only(still)).await;
+    let result = install_package(
+        spec,
+        &fetched.dir,
+        &fetched.manifest,
+        &Builds::Only(still),
+        fetched.revision.clone(),
+        None,
+    )
+    .await;
     if let Some(tmp) = &fetched.cleanup {
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -438,6 +499,7 @@ pub fn remove(shell: &str) -> Result<bool, ShellError> {
 fn describe(dir: &Path, shell: &str) -> Result<Installed, ShellError> {
     let manifest = read_manifest(dir).map_err(|e| err(e.to_string()))?;
     let present = shellpkg::builds_in(dir, shell);
+    let state = read_state(dir);
     let missing = manifest
         .builds
         .keys()
@@ -447,7 +509,9 @@ fn describe(dir: &Path, shell: &str) -> Result<Installed, ShellError> {
     Ok(Installed {
         shell: shell.to_string(),
         dir: dir.to_path_buf(),
-        source: read_state(dir).and_then(|s| s.source),
+        source: state.as_ref().and_then(|s| s.source.clone()),
+        hash: state.as_ref().and_then(|s| s.hash.clone()),
+        revision: state.and_then(|s| s.revision),
         linked: std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()),
         manifest,
         present,

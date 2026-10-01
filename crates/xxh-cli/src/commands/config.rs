@@ -56,6 +56,13 @@ pub fn run(action: &ConfigAction, cli: &CliOverrides) -> Result<(), ConfigError>
                     .unwrap_or_else(|| "<ssh-config>".into())
             );
             println!("enabled_plugins   = {:?}", eff.enabled_plugins);
+            // Declared sources (013): what `xxh sync` installs.
+            for (name, d) in &cfg.plugins {
+                println!("plugins.{name} = {}", d.source);
+            }
+            for (name, d) in &cfg.shells {
+                println!("shells.{name} = {}", d.source);
+            }
             Ok(())
         }
     }
