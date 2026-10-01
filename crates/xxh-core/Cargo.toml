@@ -20,6 +20,7 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 directories.workspace = true
+serde.workspace = true
 
 [features]
 default = []

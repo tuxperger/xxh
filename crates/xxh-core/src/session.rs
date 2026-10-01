@@ -22,7 +22,7 @@ use crate::platform::Platform;
 use crate::shellpkg;
 
 /// The embedded reference bootstrap script (Принцип I; contracts/bootstrap-protocol.md).
-const BOOTSTRAP_SH: &str = include_str!("../../../bootstrap/bootstrap.sh");
+pub(crate) const BOOTSTRAP_SH: &str = include_str!("../../../bootstrap/bootstrap.sh");
 
 /// Errors distinguishable by class for the CLI (§FR-026).
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +117,91 @@ fn exec_line(cmd: &ExecCommand, shell_cmd: &str) -> String {
     }
 }
 
+/// What a login delivers to a host of a given platform, in delivery order
+/// (005 research R5). `status` and `clean --stale` compare a host against it, so
+/// the report can never disagree with what the next login does.
+pub struct Plan {
+    pub components: Vec<Component>,
+    launch: ShellLaunch,
+    /// Plugins that target this platform, in resolved order.
+    pub plugins: Vec<SessionPlugin>,
+}
+
+/// Detect the target's platform by streaming the bootstrap script over stdin —
+/// nothing is written to the target (C-B1).
+pub async fn detect_platform<T: Transport + ?Sized>(
+    transport: &mut T,
+) -> Result<Platform, SessionError> {
+    let detect = transport
+        .upload_stream("sh -s -- detect", BOOTSTRAP_SH.as_bytes().to_vec())
+        .await?;
+    if detect.exit_code != 0 {
+        return Err(ShellError::Other(format!(
+            "platform detection failed: {}",
+            String::from_utf8_lossy(&detect.stderr)
+        ))
+        .into());
+    }
+    Ok(Platform::parse_detect(&detect.stdout_str())?)
+}
+
+/// The components a login would deliver to `platform`: the packaged shell if one
+/// exists locally for it, the environment components, and every plugin whose
+/// target mask admits the platform (a skipped plugin is reported, C-M5). Only
+/// addresses are computed — nothing is packed (023 C-A3).
+pub fn plan_components(
+    platform: &Platform,
+    eff: &Effective,
+    env_components: &[Component],
+    plugins: &[SessionPlugin],
+    progress: Progress<'_>,
+) -> Result<Plan, SessionError> {
+    let fmt = platform.preferred_archive_fmt();
+    let mut components: Vec<Component> = Vec::new();
+    let launch = match shellpkg::find(&eff.shell, platform)? {
+        Some(pkg) => {
+            let comp = Component::pack_dir(ComponentKind::Shell, &pkg.tree, fmt)?
+                .with_label(format!("shell {}", eff.shell));
+            let launch = ShellLaunch::Packaged {
+                hash: comp.hash.clone(),
+                bin_rel: pkg.bin_rel,
+            };
+            components.push(comp);
+            launch
+        }
+        None => ShellLaunch::HostBinary(eff.shell.clone()),
+    };
+    components.extend(env_components.iter().cloned());
+
+    let mut active: Vec<SessionPlugin> = Vec::new();
+    for p in plugins {
+        if !p
+            .manifest
+            .supports(platform.os_str(), platform.arch_str(), platform.libc_str())
+        {
+            progress(&format!(
+                "plugin {}: skipped (does not target {})",
+                p.manifest.name,
+                platform.target_key()
+            ));
+            continue;
+        }
+        components.push(
+            Component::pack_dir(ComponentKind::Plugin, &p.dir, fmt)?
+                .with_label(format!("plugin {}", p.manifest.name)),
+        );
+        active.push(p.clone());
+    }
+    if !active.is_empty() {
+        progress(&format!("plugins: {} active", active.len()));
+    }
+    Ok(Plan {
+        components,
+        launch,
+        plugins: active,
+    })
+}
+
 /// A connected, prepared session ready to launch a shell.
 pub struct Session<T: Transport> {
     transport: T,
@@ -156,65 +241,23 @@ impl<T: Transport> Session<T> {
         // 1) Detect platform by streaming the script over stdin — creates nothing on
         //    the host, so an unsupported platform leaves it clean (C-B1, §FR-007).
         progress("detect platform");
-        let detect = transport
-            .upload_stream("sh -s -- detect", BOOTSTRAP_SH.as_bytes().to_vec())
-            .await?;
-        if detect.exit_code != 0 {
-            return Err(ShellError::Other(format!(
-                "platform detection failed: {}",
-                String::from_utf8_lossy(&detect.stderr)
-            ))
-            .into());
-        }
-        let platform = Platform::parse_detect(&detect.stdout_str())?;
-        let fmt = platform.preferred_archive_fmt();
+        let platform = detect_platform(&mut transport).await?;
 
-        // 2) Resolve the requested shell BEFORE any write to the host (§FR-011):
-        //    a local package payload wins; otherwise the shell must already exist
-        //    on the host; otherwise fail with a clear shell-class error.
-        let mut components: Vec<Component> = Vec::new();
-        let launch = match shellpkg::find(&eff.shell, &platform)? {
-            Some(pkg) => {
-                let comp = Component::pack_dir(ComponentKind::Shell, &pkg.tree, fmt)?;
-                let launch = ShellLaunch::Packaged {
-                    hash: comp.hash.clone(),
-                    bin_rel: pkg.bin_rel,
-                };
-                components.push(comp);
-                launch
+        // 2) Resolve the requested shell and the plugins BEFORE any write to the
+        //    host (§FR-011): a local package payload wins; otherwise the shell must
+        //    already exist on the host; otherwise fail with a clear shell-class error.
+        let Plan {
+            components,
+            launch,
+            plugins: active,
+        } = plan_components(&platform, eff, env_components, plugins, progress)?;
+        if let ShellLaunch::HostBinary(name) = &launch {
+            let probe = transport
+                .exec(&format!("command -v {name} >/dev/null 2>&1"))
+                .await?;
+            if probe.exit_code != 0 {
+                return Err(ShellError::NotAvailable(name.clone()).into());
             }
-            None => {
-                let probe = transport
-                    .exec(&format!("command -v {} >/dev/null 2>&1", eff.shell))
-                    .await?;
-                if probe.exit_code != 0 {
-                    return Err(ShellError::NotAvailable(eff.shell.clone()).into());
-                }
-                ShellLaunch::HostBinary(eff.shell.clone())
-            }
-        };
-        components.extend(env_components.iter().cloned());
-
-        // 2b) Plugins: filter by the detected platform (skip with a message, C-M5),
-        //     keep the resolved order, and pack each package for delivery (T039).
-        let mut active: Vec<SessionPlugin> = Vec::new();
-        for p in plugins {
-            if !p
-                .manifest
-                .supports(platform.os_str(), platform.arch_str(), platform.libc_str())
-            {
-                progress(&format!(
-                    "plugin {}: skipped (does not target {})",
-                    p.manifest.name,
-                    platform.target_key()
-                ));
-                continue;
-            }
-            components.push(Component::pack_dir(ComponentKind::Plugin, &p.dir, fmt)?);
-            active.push(p.clone());
-        }
-        if !active.is_empty() {
-            progress(&format!("plugins: {} active", active.len()));
         }
 
         // 3) Resolve the single writable root on the target ($HOME → $TMPDIR →
@@ -339,9 +382,13 @@ impl<T: Transport> Session<T> {
         // bootstrap `run` installs the cleanup trap, then execs the given argv.
         // XXH_ROOT is pinned so the script targets exactly the resolved root.
         // Set via `env`, not a bare assignment prefix: PTY transports prepend
-        // `exec`, which would treat `XXH_ROOT=…` as the command name.
+        // `exec`, which would treat `XXH_ROOT=…` as the command name. XXH_NOW is
+        // the client clock, recorded as the kept environment's last use (005 C-R9).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         format!(
-            "env XXH_ROOT={root} sh {root}/boot.sh run {} {keep} sh -c '{}{}exec {}'",
+            "env XXH_ROOT={root} XXH_NOW={now} sh {root}/boot.sh run {} {keep} sh -c '{}{}exec {}'",
             self.session_id,
             self.prelude.replace('\'', "'\\''"),
             before_exec.replace('\'', "'\\''"),
@@ -479,7 +526,8 @@ pub fn minimal_env_component(fmt: &str) -> Result<Component, ShellError> {
         b"export XXH_SESSION=1\nalias xxh-hello='echo hello-from-xxh'\n",
     )
     .map_err(|e| ShellError::Other(e.to_string()))?;
-    let comp = Component::pack_dir_eager(ComponentKind::Config, &dir, fmt);
+    let comp =
+        Component::pack_dir_eager(ComponentKind::Config, &dir, fmt).map(|c| c.with_label("env"));
     let _ = std::fs::remove_dir_all(&dir);
     comp
 }
@@ -506,7 +554,9 @@ pub fn terminfo_component(fmt: &str) -> Option<Component> {
         "export TERMINFO_DIRS=\"$XXH_COMPONENT_DIR/terminfo:${TERMINFO_DIRS:-}\"\n",
     )
     .ok()?;
-    let comp = Component::pack_dir_eager(ComponentKind::Config, &dir, fmt).ok();
+    let comp = Component::pack_dir_eager(ComponentKind::Config, &dir, fmt)
+        .ok()
+        .map(|c| c.with_label("terminfo"));
     let _ = std::fs::remove_dir_all(&dir);
     comp
 }
@@ -964,5 +1014,64 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let b = minimal_env_component("zst").unwrap();
         assert_eq!(a.hash, b.hash);
+    }
+
+    /// The plan is exactly what a login delivers: a plugin that does not target
+    /// the platform is left out, and every planned address is the one `establish`
+    /// sends (005 T008, research R5).
+    #[tokio::test]
+    async fn plan_matches_what_establish_delivers() {
+        let _env = no_shell_packages();
+        let base = std::env::temp_dir().join(format!("xxh-plan-{}", std::process::id()));
+        let plugin = |name: &str, targets: &str| {
+            let dir = base.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let text = format!(
+                "name = \"{name}\"\nversion = \"1.0.0\"\napi_version = \"1.0.0\"\n{targets}"
+            );
+            std::fs::write(dir.join("plugin.toml"), &text).unwrap();
+            SessionPlugin {
+                manifest: Manifest::parse(&text).unwrap(),
+                dir,
+            }
+        };
+        let plugins = vec![
+            plugin("anywhere", ""),
+            plugin("arm-only", "targets = [\"linux/aarch64\"]\n"),
+        ];
+        let env = vec![minimal_env_component("gz").unwrap()];
+        let platform = Platform::parse_detect("Linux x86_64 | tar gzip").unwrap();
+
+        let plan =
+            plan_components(&platform, &eff("sh"), &env, &plugins, silent_progress()).unwrap();
+        let labels: Vec<&str> = plan.components.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["env", "plugin anywhere"]);
+        assert_eq!(plan.plugins.len(), 1);
+
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            ..Default::default()
+        };
+        let log = t.commands.clone();
+        Session::establish(
+            t,
+            &ssh_target("h"),
+            &eff("sh"),
+            &env,
+            &plugins,
+            silent_progress(),
+        )
+        .await
+        .unwrap();
+        let sent: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.split("recv ").nth(1))
+            .map(|rest| rest.split(' ').next().unwrap().to_string())
+            .collect();
+        let planned: Vec<String> = plan.components.iter().map(|c| c.hash.clone()).collect();
+        assert_eq!(sent, planned);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

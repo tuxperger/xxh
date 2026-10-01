@@ -286,6 +286,38 @@ pub trait Transport: Send {
     async fn disconnect(&mut self) -> Result<(), TransportError>;
 }
 
+/// A boxed transport is a transport, so the backend can be picked at run time in
+/// one factory and handed to code generic over [`Transport`] (005 research R7).
+#[async_trait::async_trait]
+impl<T: Transport + ?Sized> Transport for Box<T> {
+    async fn connect(
+        &mut self,
+        target: &ResolvedTarget,
+        auth: &AuthPolicy,
+    ) -> Result<(), TransportError> {
+        (**self).connect(target, auth).await
+    }
+    async fn exec(&mut self, cmd: &str) -> Result<ExecOutput, TransportError> {
+        (**self).exec(cmd).await
+    }
+    async fn upload_stream(
+        &mut self,
+        remote_cmd: &str,
+        data: Vec<u8>,
+    ) -> Result<ExecOutput, TransportError> {
+        (**self).upload_stream(remote_cmd, data).await
+    }
+    async fn exec_stream(&mut self, cmd: &str) -> Result<i32, TransportError> {
+        (**self).exec_stream(cmd).await
+    }
+    async fn open_pty(&mut self, spec: &PtySpec) -> Result<i32, TransportError> {
+        (**self).open_pty(spec).await
+    }
+    async fn disconnect(&mut self) -> Result<(), TransportError> {
+        (**self).disconnect().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Family-guard tests (002 T007, C-T6): a backend handed a target of the
@@ -318,6 +350,17 @@ mod tests {
         assert!(
             matches!(err, Err(TransportError::BackendUnavailable(_))),
             "container backend must reject an SSH target with BackendUnavailable, got {err:?}"
+        );
+    }
+
+    /// A boxed backend keeps its behaviour, family guard included (005 T001).
+    #[tokio::test]
+    async fn boxed_backend_delegates() {
+        let mut t: Box<dyn Transport> = Box::new(ContainerCliTransport::new());
+        let err = t.connect(&ssh(), &AuthPolicy::default()).await;
+        assert!(
+            matches!(err, Err(TransportError::BackendUnavailable(_))),
+            "got {err:?}"
         );
     }
 

@@ -18,38 +18,38 @@ US1 — `clean` (P1), US2 — `status` (P2).
 
 **Goal**: общий транспорт, подкоманды скрипта, план компонентов, модель и разбор.
 
-- [ ] T001 [P] В `crates/xxh-transport/src/lib.rs` реализовать
+- [X] T001 [P] В `crates/xxh-transport/src/lib.rs` реализовать
   `impl<T: Transport + ?Sized> Transport for Box<T>` (делегирование всех методов) и
   unit-тест: `Box<dyn Transport>` отвергает цель чужого семейства (research R7)
-- [ ] T002 Создать `crates/xxh-cli/src/commands/target_io.rs`: `open_transport(target,
+- [X] T002 Создать `crates/xxh-cli/src/commands/target_io.rs`: `open_transport(target,
   eff, progress) -> Result<(Box<dyn Transport>, ResolvedTarget), SessionError>`
   (бэкенд SSH по `eff.transport`, контейнер — разрешение рантайма с сообщением
   `runtime …`); перевести `commands/connect.rs` на неё, поведение входа не меняется
-- [ ] T003 В `bootstrap/bootstrap.sh`: функция перечисления каталогов окружения
+- [X] T003 В `bootstrap/bootstrap.sh`: функция перечисления каталогов окружения
   (`$HOME`, `$TMPDIR`, `/tmp` + `/.xxh`, существующий, не симлинк, `-O`, без повторов,
   без `mkdir`), подкоманды `status`, `clean <force>`, `prune <force> <hash>…` по
   contracts/bootstrap-status-clean.md (C-R1..C-R8); в `run` при keep писать
   `${XXH_NOW:-}` в `.keep` (C-R9); обновить шапку скрипта
-- [ ] T004 В `crates/xxh-core/src/session.rs` вынести шаги 2/2b `establish` в
+- [X] T004 В `crates/xxh-core/src/session.rs` вынести шаги 2/2b `establish` в
   `pub fn plan_components(platform, eff, env, plugins, progress) -> Result<Plan,
   SessionError>` (компоненты с подписями `shell <имя>`, `plugin <имя>`, подписи env —
   из `Component`), `establish` пользуется им и проверяет host-шелл как раньше;
   в `invocation` передавать `XXH_NOW=<секунды клиента>` (research R4, R5)
-- [ ] T005 В `crates/xxh-core/src/deploy.rs` добавить `Component::label` (по умолчанию
+- [X] T005 В `crates/xxh-core/src/deploy.rs` добавить `Component::label` (по умолчанию
   — вид компонента) и `with_label`; `minimal_env_component` → `env`,
   `terminfo_component` → `terminfo` в `session.rs`
-- [ ] T006 Создать `crates/xxh-core/src/remote_env.rs` (и `pub mod` в `lib.rs`): типы
+- [X] T006 Создать `crates/xxh-core/src/remote_env.rs` (и `pub mod` в `lib.rs`): типы
   `RemoteEnv`, `SessionMarker`, `StoredComponent`, `CleanOutcome` (data-model.md,
   `serde::Serialize`), разбор вывода `status`/`clean`/`prune`, функции
   `inspect(transport)`, `clean(transport, force)`, `prune(transport, force, keep)`
   — скрипт потоком через `upload_stream("sh -s -- …")`; `classify(envs, plan)` —
   `current`/`stale`/`unknown` и списки reuse/deliver; проверка адресов (64 hex)
-- [ ] T007 [P] Unit-тесты в `crates/xxh-core/src/remote_env.rs`: разбор нескольких
+- [X] T007 [P] Unit-тесты в `crates/xxh-core/src/remote_env.rs`: разбор нескольких
   каталогов, пустого вывода, `-` в полях, путей с пробелами; отказ (код 3) → `refused`;
   `left` → ошибка; классификация с планом и без; недопустимый адрес отвергается до
   транспорта; на мок-транспорте `inspect` выполняет только `upload_stream` со
   `sh -s -- status` (FR-012)
-- [ ] T008 [P] Unit-тест в `crates/xxh-core/src/session.rs`: `plan_components` на
+- [X] T008 [P] Unit-тест в `crates/xxh-core/src/session.rs`: `plan_components` на
   платформе, которую плагин не поддерживает, не включает плагин; адреса плана
   совпадают с доставленными `establish` на мок-транспорте
 

@@ -16,6 +16,13 @@
 #                             (a one-command run records the command's pid in
 #                             sessions/<session-id>.cmd so the client can stop it)
 #   reconcile              -> remove stale sessions/artifacts from crashed runs
+#   status                 -> describe every environment root of this user
+#   clean <force>          -> remove every environment root (refused while a
+#                             session is active unless force=1)
+#   prune <force> <hash>.. -> remove cached components not in the given list
+#
+# status/clean/prune are only ever streamed (`sh -s -- status`) and never create
+# anything — not even the root (005 contracts/bootstrap-status-clean.md).
 #
 # Exit status is deliberately coarse; the client maps richer error classes.
 
@@ -154,13 +161,182 @@ xxh_run() {
     _keep="$1"
     shift
     # remaining args: the shell command line to exec
-    [ "$_keep" = "1" ] && : >"$XXH_ROOT/.keep"
+    # The kept marker records when it was last used, in client time: the host
+    # contract has no `date` (005 C-R9).
+    [ "$_keep" = "1" ] && printf '%s\n' "${XXH_NOW:-}" >"$XXH_ROOT/.keep"
     echo "$$" >"$SESS_DIR/$_sid"
     # Guaranteed teardown on normal and abnormal exit (Принципы I, V).
     trap 'xxh_cleanup "$_keep" "$_sid"' EXIT INT TERM HUP
     # Assembly of components into the run dir and env wiring is completed by the
     # client-generated preamble prepended before exec; here we hand off to the shell.
     "$@"
+}
+
+# --- Maintenance: status / clean / prune (005) -------------------------------
+
+# Every environment root of this user that exists — wherever a login may have put
+# it (C-R1). Creates nothing; skips symlinks and roots owned by someone else
+# (a shell without `test -O` fails the test, i.e. treats the root as foreign).
+xxh_existing_roots() {
+    _seen="
+"
+    for _base in "${HOME:-}" "${TMPDIR:-}" /tmp; do
+        [ -n "$_base" ] || continue
+        _cand="${_base%/}/.xxh"
+        case "$_seen" in *"
+$_cand
+"*) continue ;; esac
+        _seen="$_seen$_cand
+"
+        { [ -d "$_cand" ] && [ ! -L "$_cand" ] && [ -O "$_cand" ]; } 2>/dev/null || continue
+        printf '%s\n' "$_cand"
+    done
+}
+
+# Call `$1 <root> [args…]` for each existing root, in the current shell so the
+# callee can set XXH_RC. Paths are split on newlines only, never globbed.
+xxh_for_each_root() {
+    _fn="$1"
+    shift
+    _roots=$(xxh_existing_roots)
+    [ -n "$_roots" ] || return 0
+    _ifs=$IFS
+    IFS='
+'
+    set -f
+    for _root in $_roots; do
+        IFS=$_ifs
+        set +f
+        "$_fn" "$_root" "$@"
+    done
+    IFS=$_ifs
+    set +f
+}
+
+# Disk usage in KiB, or "-" without du (not part of the host contract).
+xxh_size_kb() {
+    _du=""
+    if command -v du >/dev/null 2>&1; then
+        _du=$(du -sk "$1" 2>/dev/null || true)
+        _du=${_du%%[!0-9]*}
+    fi
+    printf '%s' "${_du:--}"
+}
+
+xxh_is_hash() {
+    case "$1" in '' | *[!0-9a-f]*) return 1 ;; esac
+    [ "${#1}" -eq 64 ]
+}
+
+# pid recorded in a session marker, or "-".
+xxh_marker_pid() {
+    _p=$(cat "$1" 2>/dev/null || true)
+    case "$_p" in '' | *[!0-9]*) _p=- ;; esac
+    printf '%s' "$_p"
+}
+
+xxh_status_one() {
+    printf 'root\t%s\n' "$1"
+    if [ -f "$1/.keep" ]; then
+        _t=$(cat "$1/.keep" 2>/dev/null || true)
+        case "$_t" in '' | *[!0-9]*) _t=- ;; esac
+        printf 'keep\t%s\n' "$_t"
+    fi
+    printf 'size\t%s\n' "$(xxh_size_kb "$1")"
+    for _m in "$1/sessions"/*; do
+        [ -f "$_m" ] || continue
+        # 004: a one-command run keeps the command's pid next to the marker.
+        case "$_m" in *.cmd) continue ;; esac
+        _pid=$(xxh_marker_pid "$_m")
+        _st=dead
+        if [ "$_pid" != - ] && kill -0 "$_pid" 2>/dev/null; then
+            _st=active
+        fi
+        printf 'session\t%s\t%s\t%s\n' "${_m##*/}" "$_pid" "$_st"
+    done
+    for _c in "$1/cache"/* "$1/cache"/.[!.]*; do
+        [ -e "$_c" ] || continue
+        _n=${_c##*/}
+        if [ -d "$_c" ] && xxh_is_hash "$_n"; then
+            printf 'component\t%s\t%s\n' "$_n" "$(xxh_size_kb "$_c")"
+        else
+            printf 'other\tcache/%s\n' "$_n"
+        fi
+    done
+    for _o in "$1"/* "$1"/.[!.]*; do
+        [ -e "$_o" ] || continue
+        case "${_o##*/}" in cache | sessions | boot.sh | .keep) continue ;; esac
+        printf 'other\t%s\n' "${_o##*/}"
+    done
+}
+
+xxh_active_one() {
+    for _m in "$1/sessions"/*; do
+        [ -f "$_m" ] || continue
+        case "$_m" in *.cmd) continue ;; esac
+        _pid=$(xxh_marker_pid "$_m")
+        if [ "$_pid" != - ] && kill -0 "$_pid" 2>/dev/null; then
+            printf 'active\t%s\t%s\t%s\n' "$_pid" "${_m##*/}" "$1"
+        fi
+    done
+}
+
+# Nothing is removed while a session is alive unless forced (C-R4, C-R7):
+# report them and stop with 3.
+xxh_refuse_if_active() {
+    [ "$1" = "1" ] && return 0
+    _active=$(xxh_for_each_root xxh_active_one)
+    [ -z "$_active" ] && return 0
+    printf '%s\n' "$_active"
+    exit 3
+}
+
+# Remove one path, report it with the space it took, or report it as left.
+xxh_remove() {
+    _sz=$(xxh_size_kb "$1")
+    rm -rf "$1" 2>/dev/null || true
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        printf 'left\t%s\n' "$1"
+        XXH_RC=4
+    else
+        printf 'removed\t%s\t%s\n' "$_sz" "$1"
+    fi
+}
+
+xxh_clean_one() {
+    xxh_remove "$1"
+}
+
+xxh_prune_one() {
+    for _c in "$1/cache"/* "$1/cache"/.[!.]*; do
+        { [ -e "$_c" ] || [ -L "$_c" ]; } || continue
+        case " $XXH_KEEP " in *" ${_c##*/} "*) continue ;; esac
+        xxh_remove "$_c"
+    done
+}
+
+xxh_clean() {
+    xxh_refuse_if_active "${1:-0}"
+    XXH_RC=0
+    xxh_for_each_root xxh_clean_one
+    exit "$XXH_RC"
+}
+
+xxh_prune() {
+    _force="${1:-0}"
+    [ "$#" -gt 0 ] && shift
+    XXH_KEEP=""
+    for _h in "$@"; do
+        if ! xxh_is_hash "$_h"; then
+            echo "xxh-bootstrap: not a component address: '$_h'" >&2
+            exit 2
+        fi
+        XXH_KEEP="$XXH_KEEP $_h"
+    done
+    xxh_refuse_if_active "$_force"
+    XXH_RC=0
+    xxh_for_each_root xxh_prune_one
+    exit "$XXH_RC"
 }
 
 _cmd="${1:-}"
@@ -172,5 +348,8 @@ case "$_cmd" in
     recv)       xxh_need_root; xxh_init_dirs; xxh_recv "$@" ;;
     run)        xxh_need_root; xxh_init_dirs; xxh_run "$@" ;;
     reconcile)  xxh_need_root; xxh_reconcile ;;
+    status)     xxh_for_each_root xxh_status_one ;;
+    clean)      xxh_clean "$@" ;;
+    prune)      xxh_prune "$@" ;;
     *)          echo "xxh-bootstrap: unknown subcommand '$_cmd'" >&2; exit 2 ;;
 esac

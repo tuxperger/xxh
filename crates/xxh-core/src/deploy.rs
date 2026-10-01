@@ -22,6 +22,16 @@ pub enum ComponentKind {
     Config,
 }
 
+impl ComponentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Plugin => "plugin",
+            Self::Config => "config",
+        }
+    }
+}
+
 /// Where a component's archive comes from when it has to be sent.
 #[derive(Debug, Clone)]
 enum Source {
@@ -40,6 +50,9 @@ pub struct Component {
     /// Archive format used if the component is sent: `"zst"` or `"gz"`. Not part
     /// of the address.
     pub fmt: &'static str,
+    /// Human-readable name for reports (`shell zsh`, `plugin foo`, `env`); not
+    /// part of the address (005 T005).
+    pub label: String,
     source: Source,
 }
 
@@ -56,6 +69,7 @@ impl Component {
             kind,
             hash: tree_hash(dir)?,
             fmt: fmt_of(fmt),
+            label: kind.as_str().to_string(),
             source: Source::Dir(dir.to_path_buf()),
         })
     }
@@ -68,8 +82,15 @@ impl Component {
             kind,
             hash: tree_hash(dir)?,
             fmt,
+            label: kind.as_str().to_string(),
             source: Source::Packed(compress(&tar_dir(dir)?, fmt)?),
         })
+    }
+
+    /// Name the component for reports (005 T005).
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
     }
 
     /// The archive to send. For a directory source this is where the packing
