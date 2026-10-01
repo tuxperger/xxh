@@ -66,7 +66,7 @@ jobs:
           --test bootstrap_smoke --test connect_smoke --test cache_reuse
           --test plugin_git_local --test error_classes
           --test exec_ssh --test exec_interrupt --test remote_env_ssh
-          --test doctor_ssh
+          --test doctor_ssh --test ssh_agent_auth --test ssh_proxy_jump
           -- --test-threads=1
 
       - name: Run container scenarios

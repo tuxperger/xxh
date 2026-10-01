@@ -22,6 +22,11 @@ $ # ~/.xxh on the host is gone
   detects the host platform with a streamed POSIX-`sh` bootstrap (nothing is written
   until the host is known to be supported), then delivers your shell, configs and
   plugins as content-addressed components into `~/.xxh/cache/<blake3>`.
+- Both SSH backends honour your `~/.ssh/config`: keys from `ssh-agent` (the host's
+  `IdentityFile` first, `IdentitiesOnly` respected), `ProxyJump` chains through
+  bastions — known_hosts checked on every hop, nothing left on the bastion — and
+  agent forwarding only when you ask for it (`-A`, or `ForwardAgent yes`). A
+  `ProxyCommand` needs `--transport ssh`.
 - The same environment works inside **running containers** without an sshd: address
   a container with `docker:<ref>`, `podman:<ref>` or `container:<ref>` and xxh
   drives the runtime's `exec` as the transport (same bootstrap, same cache, same
@@ -54,7 +59,7 @@ plain `cargo build`/`cargo test` also works.
 
 ```sh
 # SSH host (default family)
-xxh [user@]<host> [-l user] [-i ~/.ssh/key] [--shell zsh] [--keep] [--transport russh|ssh] [--connect-timeout 10] [-v|-vv|--debug]
+xxh [user@]<host> [-l user] [-i ~/.ssh/key] [-A] [--shell zsh] [--keep] [--transport russh|ssh] [--connect-timeout 10] [-v|-vv|--debug]
 
 # Running container (same flags, minus the SSH-only ones; plus --runtime)
 xxh docker:app1                 # a running docker container by name or id

@@ -76,13 +76,13 @@ sshd в docker-сети и настоящий `ssh-agent`.
 
 ## Phase 5: Polish
 
-- [ ] T014 [P] `.github/workflows/integration.yml` (`ssh_agent_auth`,
+- [X] T014 [P] `.github/workflows/integration.yml` (`ssh_agent_auth`,
   `ssh_proxy_jump` — SSH-шаг), `README.md` (агент, ProxyJump, `-A`), убрать из
   шапки `russh_backend.rs` пометку об отложенном агенте; подсказку про агент в
   `read_secret` поправить
-- [ ] T015 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine) и интеграцию на
+- [X] T015 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine) и интеграцию на
   debian
-- [ ] T016 В `specs/012-ssh-agent-and-jump-parity/spec.md` — `**Status**: Implemented`
+- [X] T016 В `specs/012-ssh-agent-and-jump-parity/spec.md` — `**Status**: Implemented`
 
 ---
 
