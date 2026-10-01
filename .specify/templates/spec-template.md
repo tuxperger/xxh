@@ -6,6 +6,10 @@
 
 **Status**: Draft
 
+**Priority**: [P1 | P2 | P3 — место фичи в specs/ROADMAP.md]
+
+**Summary**: [одна строка: что получит пользователь — попадает в specs/ROADMAP.md]
+
 **Input**: User description: "$ARGUMENTS"
 
 ## User Scenarios & Testing *(mandatory)*
