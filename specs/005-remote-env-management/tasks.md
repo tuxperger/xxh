@@ -111,15 +111,15 @@ US1 — `clean` (P1), US2 — `status` (P2).
 
 ## Phase 4: Polish
 
-- [ ] T017 [P] `.github/workflows/integration.yml`: добавить `remote_env_ssh` в шаг
+- [X] T017 [P] `.github/workflows/integration.yml`: добавить `remote_env_ssh` в шаг
   SSH-сценариев, `remote_env_container` и `remote_env_cli` — в шаг контейнерных
-- [ ] T018 [P] `README.md` (Usage: `xxh status`, `xxh clean`, `--force`, `--stale`,
+- [X] T018 [P] `README.md` (Usage: `xxh status`, `xxh clean`, `--force`, `--stale`,
   коды выхода) и `specs/001-portable-shell-over-ssh/contracts/cli-commands.md`
   (команды и код 50)
-- [ ] T019 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine и debian), пройти
+- [X] T019 Прогнать `.specify/scripts/xxh/gates.sh all` (alpine и debian), пройти
   `quickstart.md` вручную; замерить `xxh status docker:<c>` против голого входа
   (SC-002) и записать в `quickstart.md`
-- [ ] T020 В `specs/005-remote-env-management/spec.md` поставить
+- [X] T020 В `specs/005-remote-env-management/spec.md` поставить
   `**Status**: Implemented`
 
 ---

@@ -59,17 +59,21 @@ xxh [user@]<host> [-l user] [-i ~/.ssh/key] [--shell zsh] [--keep] [--transport 
 # Running container (same flags, minus the SSH-only ones; plus --runtime)
 xxh docker:app1                 # a running docker container by name or id
 xxh podman:6f0a12               # a running podman container
-xxh container:app1 [--runtime docker
+xxh container:app1 [--runtime docker|podman]   # runtime from flag/config, else auto (docker → podman)
+
 # One command instead of a session (same environment, same cleanup)
 xxh <target> -- <command> [args…]   # exact arguments, no shell re-interpretation
 xxh <target> -c '<command line>'    # through your shell: pipes, redirections
 xxh <target> -t -- <command>        # with a terminal (full-screen programs)
-|podman]   # runtime from flag/config, else auto (docker → podman)
 
-xxh configxxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]                # canonical config file location
+# What xxh left on a target, and removing it
+xxh status <target> [--json]           # kept environment, last use, size, sessions, components
+xxh clean <target> [--stale] [--force] # remove it all, or only what you no longer use
+
+xxh config                     # canonical config file location
 xxh config show [--host web]   # effective settings (flag > per-host > global > default)
 
-xxh plugin add <git-url | path | nixpkgs:attr>
+xxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]
 xxh plugin enable|disable|update|remove <name>
 xxh plugin list [--enabled]
 ```
@@ -148,8 +152,29 @@ returns. It is built for scripts:
 - With stdin redirected xxh never prompts: needing a password or key passphrase is
   a transport error, not a silent read of your input.
 
+### Seeing and removing what xxh left
+
+```console
+$ xxh status prod-web-3
+/home/me/.xxh — kept, last used 2 h ago, 33.2 MiB
+  components:
+    current  9b6fa61a2a0a  shell zsh            23.6 MiB
+    stale    5c01d2e3f4a5  -                    1.3 MiB
+next login: reuses 5, delivers 1 (plugin nix-htop)
+$ xxh clean prod-web-3 --stale     # only what your current setup no longer uses
+$ xxh clean prod-web-3             # everything; the host is as before your first visit
+```
+
+`status` writes nothing to the target — not even on a host xxh has never seen —
+and `--json` prints one object for scripts. It looks in every place a login may
+have used (`$HOME/.xxh`, `$TMPDIR/.xxh`, `/tmp/.xxh`), only in directories owned by
+you. `clean` will not pull an environment from under a running session: it lists
+the sessions and exits `50` unless you pass `--force`; it also exits `50` if
+something could not be removed, and says what.
+
+
 Exit codes are distinguishable by error class: `10` transport, `20` shell,
-`30` plugin, `40` config.
+`30` plugin, `40` config, `50` target (`clean` refused or incomplete).
 
 ## Platform matrix
 
