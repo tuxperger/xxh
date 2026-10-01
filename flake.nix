@@ -45,7 +45,16 @@
             || (builtins.match ".*config-schema\\.json$" path != null);
         };
 
-        commonArgs = {
+        # Name the derivations after the binary rather than crane's default
+        # `cargo-package` (the workspace root has no [package]).
+        crateInfo = craneLib.crateNameFromCargoToml { cargoToml = ./crates/xxh-cli/Cargo.toml; };
+        pkgMeta = {
+          pname = "xxh";
+          inherit (crateInfo) version;
+          meta.mainProgram = "xxh";
+        };
+
+        commonArgs = pkgMeta // {
           inherit src;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -71,7 +80,7 @@
             staticCraneLib = (crane.mkLib pkgs).overrideToolchain staticToolchain;
             upperTarget = builtins.replaceStrings [ "-" ] [ "_" ] (pkgs.lib.toUpper target);
           in
-          staticCraneLib.buildPackage {
+          staticCraneLib.buildPackage (pkgMeta // {
             inherit src;
             strictDeps = true;
             CARGO_BUILD_TARGET = target;
@@ -91,7 +100,7 @@
             # musl lacks glibc's *_chk fortify symbols.
             hardeningDisable = [ "fortify" ];
             doCheck = false; # cross tests do not run on the build host
-          };
+          });
       in
       {
         devShells.default = craneLib.devShell {
