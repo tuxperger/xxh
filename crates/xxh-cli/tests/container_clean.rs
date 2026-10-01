@@ -157,7 +157,14 @@ fn abnormal_disconnect_is_reconciled_on_next_entry() {
         )
         .await
         .expect("establish after crash");
-        s.run_command("true").await.expect("run");
+        // The session must really work after the sweep, not just not fail
+        // (014: boot.sh used to be swept away with the stale root).
+        assert_eq!(
+            s.run_command("test \"$XXH_SESSION\" = 1")
+                .await
+                .expect("run"),
+            0
+        );
         s.finish().await.expect("finish");
     });
 

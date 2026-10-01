@@ -312,15 +312,22 @@ impl<T: Transport> Session<T> {
         let remote_boot = format!("{remote_root}/boot.sh");
         let boot = |args: &str| format!("XXH_ROOT={remote_root} sh {remote_boot} {args}");
 
-        // Install the bootstrap script into the resolved root and sweep any stale
-        // artefacts from a previously crashed session (§FR-006).
+        // Sweep stale artefacts from a previously crashed session (§FR-006) —
+        // streamed and *before* the script is installed: the sweep may remove
+        // the whole root, and with it an installed boot.sh (014 found later
+        // calls silently failing after a crash). Then install the script.
+        transport
+            .upload_stream(
+                &format!("env XXH_ROOT={remote_root} sh -s -- reconcile"),
+                BOOTSTRAP_SH.as_bytes().to_vec(),
+            )
+            .await?;
         transport
             .upload_stream(
                 &format!("mkdir -p {remote_root} && cat > {remote_boot} && chmod +x {remote_boot}"),
                 BOOTSTRAP_SH.as_bytes().to_vec(),
             )
             .await?;
-        transport.exec(&boot("reconcile")).await?;
 
         // 4) Nothing kept is trusted unchecked (014): the target describes every
         //    component this session needs and only those matching the client's
@@ -336,7 +343,11 @@ impl<T: Transport> Session<T> {
             .into());
         }
         let mut distrust = false;
-        if verify.root_too_open() {
+        // Only a root that holds something can have been tampered with: a root
+        // just created under a permissive umask (docker exec's 0000) is merely
+        // narrowed by list-cache below.
+        let holds_kept = verify.components.values().any(Option::is_some);
+        if verify.root_too_open() && holds_kept {
             notes.push(format!(
                 "the environment directory {remote_root} was writable by others ({}); \
                  its permissions are narrowed and kept components sent again",
@@ -1465,6 +1476,15 @@ mod tests {
         let s = login(t).await.unwrap();
         assert_eq!(s.delivery_report().delivered, 1);
         assert!(s.notes().iter().any(|n| n.contains("writable by others")));
+
+        // A fresh root under a permissive umask holds nothing to distrust.
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            root_line: Some("own\tdrwxrwxrwx"),
+            ..Default::default()
+        };
+        let s = login(t).await.unwrap();
+        assert!(s.notes().is_empty(), "{:?}", s.notes());
     }
 
     /// A failed unpack and a delivery that does not match are errors in the
