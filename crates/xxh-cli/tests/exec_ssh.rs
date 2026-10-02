@@ -20,7 +20,8 @@ fn one_command_runs_with_client_stdio_and_leaves_the_host_clean() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let run = |args: &[&str], stdin: &[u8]| {
         let mut c = fx.xxh(XXH);
-        c.args(args);
+        // The fixture image has no zsh (the default shell): use the host's sh.
+        c.args(["--shell", "sh"]).args(args);
         let out = run_with_stdin(c, stdin);
         // Every run is ephemeral: nothing may be left behind, whatever the outcome.
         assert_eq!(

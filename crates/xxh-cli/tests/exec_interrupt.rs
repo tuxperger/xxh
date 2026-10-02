@@ -23,6 +23,8 @@ fn interrupting_xxh_stops_the_remote_command_and_cleans_up() {
     // A command line whose shell has a child: both must die, not just the shell.
     let mut child = fx
         .xxh(XXH)
+        // The fixture image has no zsh (the default shell): use the host's sh.
+        .args(["--shell", "sh"])
         .args(["box", "-c", "echo started; sleep 61; echo survived"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

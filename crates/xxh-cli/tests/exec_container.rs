@@ -22,7 +22,8 @@ fn one_command_runs_in_a_container_and_leaves_it_clean() {
     let target = format!("{runtime}:{}", fx.name);
     let run = |args: &[&str], stdin: &[u8]| {
         let mut c = Command::new(XXH);
-        c.arg(&target).args(args);
+        // The bare base image has no zsh (the default shell): use the host's sh.
+        c.args(["--shell", "sh"]).arg(&target).args(args);
         let out = run_with_stdin(c, stdin);
         assert_eq!(
             fx.cleanliness(),

@@ -405,9 +405,11 @@ impl Pty {
         use std::os::fd::FromRawFd;
         let mut master: libc::c_int = 0;
         let mut slave: libc::c_int = 0;
-        let ws: libc::winsize = winsize(cols, rows);
+        // `mut`: Apple's libc declares `winp` as `*mut winsize` (Linux: `*const`);
+        // a `*mut` pointer coerces to both.
+        let mut ws: libc::winsize = winsize(cols, rows);
         // SAFETY: openpty fills two fresh fds we immediately take ownership of;
-        // `winp` is read-only (const winsize).
+        // it only reads `winp`.
         #[allow(unsafe_code)]
         let rc = unsafe {
             libc::openpty(
@@ -415,7 +417,7 @@ impl Pty {
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &ws,
+                &raw mut ws,
             )
         };
         if rc != 0 {
