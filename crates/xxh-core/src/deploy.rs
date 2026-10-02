@@ -689,9 +689,13 @@ mod tempdir_lite {
     pub struct TempDir(PathBuf);
     impl TempDir {
         pub fn new() -> Self {
+            // The counter keeps parallel tests apart: macOS clocks tick in
+            // microseconds, so two tests can read the same nanoseconds.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let base = std::env::temp_dir().join(format!(
-                "xxh-test-{}-{}",
+                "xxh-test-{}-{}-{}",
                 std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 fastrand()
             ));
             std::fs::create_dir_all(&base).unwrap();
