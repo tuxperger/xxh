@@ -269,6 +269,28 @@ pub fn shells(current: &OsStr) -> Vec<CompletionCandidate> {
     to_engine(names.into_iter().map(Candidate::plain).collect())
 }
 
+/// Completer for a config key (009 C-G20): every key that can be set, with
+/// the hosts, plugins and shells the config already names.
+pub fn config_keys(current: &OsStr) -> Vec<CompletionCandidate> {
+    let current = current.to_string_lossy();
+    let cfg = Config::load_default().unwrap_or_default();
+    let names = |map: &str| -> Vec<String> {
+        match map {
+            "hosts" => cfg.hosts.keys().cloned().collect(),
+            "plugins" => cfg.plugins.keys().cloned().collect(),
+            "shells" => cfg.shells.keys().cloned().collect(),
+            _ => Vec::new(),
+        }
+    };
+    to_engine(
+        xxh_config::keys::settable_keys(&names)
+            .into_iter()
+            .filter(|k| k.starts_with(&*current))
+            .map(Candidate::plain)
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
