@@ -1,10 +1,11 @@
-//! Integration (010 T005, US1): the **real `xxh` binary** delivers the files
+//! Integration (010 T005/T009, US1+US3): the **real `xxh` binary** delivers the files
 //! declared under `[files]` to an sshd host. Programs in the session find them
 //! through `GIT_CONFIG_GLOBAL`, `XDG_CONFIG_HOME` and a variable the user named,
 //! with their permission bits; a missing source and a secret are reported and
 //! left out; the target's own files of the same names stay byte-for-byte as they
 //! were, and nothing is left after the session (Принцип I, VIII). File contents
-//! never reach xxh's own output, even at `-vv` (C-F12). Docker-gated.
+//! never reach xxh's own output, even at `-vv` (C-F12). A kept environment
+//! is not sent again, and a changed entry goes alone (C-F4). Docker-gated.
 
 mod common;
 
@@ -126,6 +127,55 @@ fn declared_files_are_visible_in_the_session_and_leave_nothing_behind() {
         !err.contains("MARK"),
         "file contents in the -vv log:\n{err}"
     );
+    assert_eq!(rt.block_on(fx.cleanliness()), "CLEAN");
+
+    // ── US3: a kept environment is not sent again (§FR-006, SC-004, T009) ───
+    let (code, _, err) = run(&["-v", "--keep", "box", "--", "true"]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    let (code, _, err) = run(&["-v", "--keep", "box", "--", "true"]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert!(
+        err.contains("sending 0,"),
+        "nothing changed, nothing sent: {err}"
+    );
+
+    // One entry outside `.config/` changes: only it goes (C-F4).
+    write("myrc", "RCMARK-changed\n", 0o644);
+    let (code, out, err) = run(&[
+        "-v",
+        "--keep",
+        "box",
+        "--",
+        "sh",
+        "-c",
+        "cat \"$MYTOOL_RC\"",
+    ]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert!(err.contains("sending 1,"), "only the changed entry: {err}");
+    assert_eq!(out, "RCMARK-changed\n");
+
+    // `status` knows the files' components and finds them current (C-F5).
+    let (code, out, err) = run(&["status", "box", "--json"]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let comps = v["envs"][0]["components"].as_array().unwrap();
+    let labels: Vec<&str> = comps.iter().filter_map(|c| c["label"].as_str()).collect();
+    for want in ["files .gitconfig", "files .myrc", "files .config"] {
+        assert!(labels.contains(&want), "`{want}` in {labels:?}");
+    }
+    let current = |label: &str| {
+        comps
+            .iter()
+            .filter(|c| c["label"] == label)
+            .any(|c| c["state"] == "current")
+    };
+    assert!(current("files .myrc"), "the changed entry is current: {v}");
+    assert!(current("files .gitconfig"), "{v}");
+
+    // `clean` removes everything, files included.
+    let (code, out, err) = run(&["clean", "box"]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert!(out.contains("removed "), "{out}");
 
     // ── The target's own files untouched; the host clean (§FR-003/4, SC-003) ─
     assert_eq!(
