@@ -85,7 +85,8 @@ fn flake_program_runs_on_a_host_without_nix() {
         let code = session
             .run_command(
                 "sh -c 'hello >/dev/null && [ ! -e /nix ] \
-                 && [ -f \"$SSL_CERT_FILE\" ] && [ -d \"$TERMINFO\" ]'",
+                 && [ -f \"$SSL_CERT_FILE\" ] && [ -z \"${TERMINFO:-}\" ] \
+                 && [ -d \"${TERMINFO_DIRS##*:}\" ]'",
             )
             .await
             .expect("run the flake program");

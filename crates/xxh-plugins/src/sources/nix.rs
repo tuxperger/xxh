@@ -308,10 +308,24 @@ pub(crate) fn add_runtime_data(staging: &Path, env_sh: &mut String) -> Result<()
     if let Some(terminfo) = output_with("ncurses", "share/terminfo") {
         copy_tree(&terminfo, &staging.join("share/terminfo"))
             .map_err(|e| PluginError::Other(format!("runtime data: {e}")))?;
-        env_sh.push_str("export TERMINFO=\"$XXH_COMPONENT_DIR/share/terminfo\"\n");
+        env_sh.push_str(TERMINFO_ENV);
     }
     Ok(())
 }
+
+/// How a plugin's terminfo copy is wired in: appended to `TERMINFO_DIRS`, never
+/// through `TERMINFO`. That variable belongs to the shell — zsh-bin's ncurses
+/// reads only `TERMINFO`, so overriding it with a database zsh cannot read left
+/// zle without a terminal description (backspace moved the cursor forward). The
+/// plugin's own nixpkgs ncurses still searches `TERMINFO_DIRS`; appending keeps
+/// the client's entry for `$TERM` (delivered by the session) ahead of this copy.
+const TERMINFO_ENV: &str =
+    "export TERMINFO_DIRS=\"${TERMINFO_DIRS:+$TERMINFO_DIRS:}$XXH_COMPONENT_DIR/share/terminfo\"\n";
+
+/// Version of the packaging layout (`env.sh` and runtime data), part of every
+/// client-cache key: bumping it rebuilds artefacts packaged by an older xxh
+/// instead of reusing their stale `env.sh`.
+pub(crate) const PACKAGING_VERSION: u32 = 2;
 
 pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
@@ -380,7 +394,7 @@ impl PackageSource for NixProvider {
         let pkg_ref = format!("{}#pkgsStatic.{attr}", nixpkgs_pin());
 
         // Deterministic client-side cache key for (spec, pin, target) — C-N4.
-        let key = blake3::hash(format!("{pkg_ref}|x86_64").as_bytes())
+        let key = blake3::hash(format!("{pkg_ref}|x86_64|v{PACKAGING_VERSION}").as_bytes())
             .to_hex()
             .to_string();
         let cache = client_cache_dir()?.join(&key);
@@ -463,6 +477,30 @@ mod tests {
         );
         assert_eq!(nix_target("darwin", "x86_64"), None);
         assert_eq!(nix_target("freebsd", "x86_64"), None);
+    }
+
+    /// The shell owns `TERMINFO` (zsh-bin reads nothing else); a plugin only
+    /// appends its copy to `TERMINFO_DIRS`, after whatever is already there.
+    #[test]
+    fn plugin_terminfo_does_not_take_over_terminfo() {
+        assert!(!TERMINFO_ENV.contains("TERMINFO="), "{TERMINFO_ENV}");
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("{TERMINFO_ENV}printf %s \"$TERMINFO_DIRS\"")])
+            .env("XXH_COMPONENT_DIR", "/p")
+            .env("TERMINFO_DIRS", "/client/terminfo:")
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "/client/terminfo::/p/share/terminfo"
+        );
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("{TERMINFO_ENV}printf %s \"$TERMINFO_DIRS\"")])
+            .env("XXH_COMPONENT_DIR", "/p")
+            .env_remove("TERMINFO_DIRS")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "/p/share/terminfo");
     }
 
     #[test]

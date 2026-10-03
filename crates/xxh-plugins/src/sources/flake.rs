@@ -23,7 +23,8 @@ use crate::source::{
     Availability, FetchedPackage, PackageSource, SourceSpec, Support, read_manifest, redact_ref,
 };
 use crate::sources::nix::{
-    add_runtime_data, audit_package, client_cache_dir, copy_tree, nix_available_as,
+    PACKAGING_VERSION, add_runtime_data, audit_package, client_cache_dir, copy_tree,
+    nix_available_as,
 };
 
 /// How many trailing lines of Nix's stderr an error carries (C-F16, §FR-025).
@@ -357,9 +358,15 @@ impl PackageSource for FlakeProvider {
             derive_name(reference, attr, name.as_deref())?
         };
         let shape = if is_plugin { "plugin" } else { "program" };
-        let key = blake3::hash(format!("{}|{shape}|{plugin_name}", store_dir.display()).as_bytes())
-            .to_hex()
-            .to_string();
+        let key = blake3::hash(
+            format!(
+                "{}|{shape}|{plugin_name}|v{PACKAGING_VERSION}",
+                store_dir.display()
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
         let cache = client_cache_dir()?.join(&key);
 
         if !cache.join("plugin.toml").is_file() {
