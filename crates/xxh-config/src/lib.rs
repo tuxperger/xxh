@@ -4,7 +4,11 @@
 //! modules merely *generate* this file (T054–T059); they are not an alternative
 //! runtime source. See data-model.md and contracts/nix-config-module.md.
 
+pub mod edit;
+pub mod keys;
 pub mod schema;
+pub mod template;
+pub mod validate;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +28,32 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    /// The file is not TOML at all, so it cannot be edited in place.
+    #[error("the config is not valid TOML:\n{0}")]
+    Unparsable(String),
+    /// `xxh config validate` found errors (or, strictly, warnings).
+    #[error("invalid config `{path}`{details}")]
+    Invalid { path: PathBuf, details: String },
+    #[error("`{key}` is not a config key")]
+    InvalidKey { key: String },
+    #[error("unknown config key `{key}`{hint}")]
+    UnknownKey { key: String, hint: String },
+    #[error("invalid value `{value}` for `{key}`: {expected}")]
+    InvalidValue {
+        key: String,
+        value: String,
+        expected: String,
+    },
+    #[error("`{key}` is not set{default}")]
+    NotSet { key: String, default: String },
+    /// Something else owns the file (a Nix module, a read-only mount).
+    #[error("`{path}` is managed elsewhere ({reason}) — change it at its source")]
+    Managed { path: PathBuf, reason: String },
+    #[error("`{path}` already exists (use --force to overwrite it)")]
+    Exists { path: PathBuf },
+    /// A failure with no narrower kind (no config directory, no editor).
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Cleanup behaviour on session exit (§FR-005/012, Принцип I).
@@ -97,7 +127,7 @@ fn default_timeout() -> u64 {
 /// Every field is optional; `None` means "inherit the global value". List-valued
 /// fields (`enabled_plugins`) **replace** the global list rather than merging
 /// (resolves analysis finding C4 — simple, predictable precedence).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HostOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_shell: Option<String>,
@@ -122,7 +152,7 @@ pub struct HostOverride {
 }
 
 /// The canonical user configuration file (`~/.config/xxh/config.toml`).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Config {
     #[serde(default = "default_shell")]
     pub default_shell: String,
