@@ -88,8 +88,10 @@ xxh doctor [<target>] [--json]
 xxh status <target> [--json]           # kept environment, last use, size, sessions, components
 xxh clean <target> [--stale] [--force] # remove it all, or only what you no longer use
 
-xxh config                     # canonical config file location
+xxh config path                # canonical config file location
 xxh config show [--host web]   # effective settings (flag > per-host > global > default)
+xxh config init | validate [FILE] [--strict] | edit
+xxh config get|set|unset <key> [value]   # e.g. set hosts.web.default_shell fish
 
 xxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]
 xxh plugin enable|disable|update|remove <name>
@@ -248,6 +250,30 @@ something could not be removed, and says what.
 Exit codes are distinguishable by error class: `10` transport, `20` shell,
 `30` plugin, `40` config, `50` target (`clean` refused or incomplete); `xxh doctor`
 exits `1` when a check fails.
+
+### Managing the config
+
+The config is one TOML file; these commands create, check and change it without
+connecting anywhere (every failure is config-class, exit `40`):
+
+```sh
+xxh config init                              # a commented file with the defaults
+xxh config validate [FILE] [--strict]        # what a login would refuse, plus typos
+xxh config set hosts.web.default_shell fish  # one value; lists are comma-separated
+xxh config get hosts.web.default_shell       # fish
+xxh config unset hosts.web                   # a value, or a whole table
+xxh config edit                              # $VISUAL / $EDITOR, saved only if valid
+```
+
+`validate` runs the file through the parser a login uses, so an error names the
+line, the offending value and the allowed ones; a key the config does not know is
+a warning with the nearest real key ("unknown key defualt_shell, did you mean
+default_shell?") and an error under `--strict`, for CI. `set` and `unset`
+rewrite only the value they are about — comments, ordering and formatting stay —
+and never write a file that would not validate; `xxh plugin enable|disable`
+change the config the same way. A config managed elsewhere (a symlink from a Nix
+module, a read-only file) is not modified: the command says so and points at the
+source. A host name with a dot is quoted: `hosts."web.example.com".user`.
 
 ### Completion and man pages
 

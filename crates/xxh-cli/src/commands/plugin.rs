@@ -6,7 +6,7 @@
 
 use clap::Subcommand;
 use clap_complete::engine::ArgValueCompleter;
-use xxh_config::{Config, ConfigError, Effective};
+use xxh_config::{Config, ConfigError, Effective, edit};
 
 use crate::complete;
 use xxh_core::session::SessionPlugin;
@@ -101,11 +101,25 @@ fn update_line(name: &str, from: (&str, Option<&str>), to: (&str, Option<&str>))
     format!("{name}: {} → {}", side(from), side(to))
 }
 
+/// Change `enabled_plugins` in the config file. Only that list is rewritten —
+/// comments and every other line stay (009 C-G19) — and a config managed
+/// elsewhere is refused with the reason (C-G15) when there is a change to make.
 fn edit_config(f: impl FnOnce(&mut Config)) -> Result<(), PluginCmdError> {
     let path = config_path()?;
     let mut cfg = Config::load(&path)?;
+    let before = cfg.enabled_plugins.clone();
     f(&mut cfg);
-    cfg.save(&path)?;
+    if cfg.enabled_plugins == before {
+        return Ok(());
+    }
+    edit::ensure_writable(&path)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => return Err(ConfigError::Io { path, source }.into()),
+    };
+    let text = edit::set_list(&text, "enabled_plugins", &cfg.enabled_plugins)?;
+    edit::write_atomic(&path, &text)?;
     Ok(())
 }
 

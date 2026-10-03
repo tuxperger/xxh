@@ -24,6 +24,8 @@ russh-config = "0.58"
 # Serialization / config / plugin manifests
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Editing the config in place, comments kept (009 research R3); the crate `toml` is built on
+toml_edit = "0.22"
 semver = { version = "1", features = ["serde"] }
 # Content-addressed cache hashing (research R4)
 blake3 = "1"
