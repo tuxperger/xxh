@@ -251,6 +251,54 @@ Exit codes are distinguishable by error class: `10` transport, `20` shell,
 `30` plugin, `40` config, `50` target (`clean` refused or incomplete); `xxh doctor`
 exits `1` when a check fails.
 
+### Your own dotfiles: `[files]`
+
+A couple of personal configs do not need a plugin. Name them in the config by
+the name a program looks for in the home directory, with the path on this
+machine:
+
+```toml
+[files]
+".gitconfig" = "~/dotfiles/gitconfig"                 # a file
+".config/nvim" = "~/.config/nvim"                     # a whole directory
+".myrc" = { source = "~/.myrc", env = "MYTOOL_RC" }    # you name the variable
+".pgpass" = { source = "~/.pgpass", env = "PGPASSFILE", secret = true }
+
+[hosts.work.files]
+".gitconfig" = "~/dotfiles/gitconfig-work"            # replaces the global entry
+".config/nvim" = false                                # not on this host
+```
+
+Nothing is written to the target's home directory: the files go into xxh's own
+root like any other component, and the session points programs at them — so the
+target's own `~/.gitconfig` is never touched, and after an ephemeral session
+nothing is left. Programs find them this way:
+
+| Name | In the session |
+| --- | --- |
+| `.config/…` | `XDG_CONFIG_HOME` (all `.config` entries together) |
+| `.gitconfig` | `GIT_CONFIG_GLOBAL` |
+| `.inputrc` | `INPUTRC` |
+| `.vimrc` | `VIMINIT` (`source <file>`) |
+| `.screenrc`, `.wgetrc`, `.psqlrc`, `.editrc` | `SCREENRC`, `WGETRC`, `PSQLRC`, `EDITRC` |
+| `.curlrc` | `CURL_HOME` |
+| `.npmrc` | `NPM_CONFIG_USERCONFIG` |
+| `.ripgreprc` | `RIPGREP_CONFIG_PATH` |
+| anything with `env = "VAR"` | `VAR` |
+
+Before connecting, xxh warns (`xxh: warning: files: …`) and goes on without the
+entry when its source is missing, when it looks like a secret (private keys,
+`.netrc`, `.pgpass`, `*token*`, `.ssh`/`.gnupg`/`.aws` directories… — add
+`secret = true` to send it anyway), and when no variable can point its program at
+it (a program that reads only `~/.foo` — give it `env` or keep it under
+`.config/`). Permissions are kept, a symlink leading out of a declared directory
+is skipped, an entry over 10 MiB is reported, and file contents never appear in
+any message or log. Each entry outside `.config/` is its own content-addressed
+component and everything under `.config/` is one: with `--keep`, an unchanged
+entry is not sent again. Limits: the target's own `~/.config` is hidden from
+programs in a session that brings `.config` entries, and contents are not
+templated per host. `xxh config show [--host H]` prints the set a target gets.
+
 ### Managing the config
 
 The config is one TOML file; these commands create, check and change it without
@@ -422,6 +470,9 @@ programs.xxh = {
   shells.zsh.source = "git@github.com:you/xxh-shell-zsh.git";
   lockFile = ./xxh.lock;     # optional: pin the versions from your config repo
   hosts.web.default_shell = "fish";
+  files.".gitconfig" = "~/dotfiles/gitconfig";
+  files.".myrc" = { source = "~/.myrc"; env = "MYTOOL_RC"; };
+  hosts.web.files.".gitconfig" = "~/dotfiles/gitconfig-work";
 };
 # HM: imports = [ xxh.homeManagerModules.default ];   (runs `xxh sync` on activation)
 # NixOS: imports = [ xxh.nixosModules.default ];      (writes /etc/xxh/config.toml)

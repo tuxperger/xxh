@@ -72,7 +72,7 @@
 
 ## Phase 5: Polish
 
-- [ ] T010 `README.md`: раздел про `[files]` (таблица переменных, секреты,
+- [X] T010 `README.md`: раздел про `[files]` (таблица переменных, секреты,
   ограничения); `spec.md` — `**Status**: Implemented`
 
 ## Dependencies
