@@ -32,6 +32,9 @@ let
           files.".pgpass" = { source = "~/.pgpass"; env = "PGPASSFILE"; secret = true; };
           hosts.web.files.".gitconfig" = "~/dotfiles/gitconfig-work";
           hosts.web.files.".config/nvim" = false;
+          env.EDITOR = "editor-value-9c";
+          env.PAGER = "less";
+          hosts.web.env.EDITOR = "vi";
           plugins.alpha.source = "https://example.org/alpha.git#v1";
           plugins.beta.source = "nixpkgs:htop";
           shells.zsh.source = "/srv/xxh-shell-zsh";
@@ -85,6 +88,13 @@ pkgs.runCommand "xxh-nix-module-roundtrip" { nativeBuildInputs = [ xxh ]; } ''
   grep -q 'files.".gitconfig" = ~/dotfiles/gitconfig-work$' web.out
   grep -q 'files.".myrc" = ~/.myrc (env MYTOOL_RC)$' web.out
   if grep -q 'files.".config/nvim"' web.out; then exit 1; fi
+
+  # 011: session variables reach the canonical file; names only in the output.
+  grep -q '^env.EDITOR = <set>$' declared.out
+  grep -q '^env.PAGER = <set>$' declared.out
+  grep -q '^env.EDITOR = <set>$' web.out
+  grep -q '^EDITOR = "vi"$' $XDG_CONFIG_HOME/xxh/config.toml
+  if grep -q editor-value-9c declared.out; then exit 1; fi
 
   echo "round-trip: module -> config.toml -> xxh-config parser OK"
   touch $out

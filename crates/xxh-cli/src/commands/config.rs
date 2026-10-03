@@ -124,12 +124,17 @@ fn check(text: &str) -> (Option<String>, Vec<Warning>) {
             }
         }
     }
-    // Declared files, for every host that changes the set (010 C-F2).
+    // Declared files and variables, for every host that changes them (010 C-F2).
     if let Some(cfg) = validate::parse(text) {
         let hosts = std::iter::once("").chain(cfg.hosts.keys().map(String::as_str));
         for host in hosts {
-            let files = cfg.resolve(host, &CliOverrides::default()).files;
-            if let Err(e) = xxh_core::files::check(&files) {
+            let eff = cfg.resolve(host, &CliOverrides::default());
+            // Session variables too (011 C-E2); the message names no value.
+            let found = [
+                xxh_core::files::check(&eff.files),
+                xxh_core::env::check(&eff.env),
+            ];
+            for e in found.into_iter().filter_map(Result::err) {
                 if !problems.contains(&e) {
                     problems.push(e);
                 }
@@ -382,6 +387,10 @@ pub fn run(action: &ConfigAction, cli: &CliOverrides) -> Result<(), ConfigError>
                 } else {
                     println!("files.\"{name}\" = {} ({})", f.source, extra.join(", "));
                 }
+            }
+            // Session variables by name only: a value may be a secret (011 C-E10).
+            for name in eff.env.keys() {
+                println!("env.{name} = <set>");
             }
             // Declared sources (013): what `xxh sync` installs.
             for (name, d) in &cfg.plugins {

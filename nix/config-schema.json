@@ -32,6 +32,13 @@
         "type": "string"
       }
     },
+    "env": {
+      "description": "Variables set in every session (011 C-E1). Values may be secrets: xxh\nnever prints them.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "files": {
       "description": "Personal files made visible in the session, by the name a program looks\nfor (`.gitconfig`, `.config/nvim`) (010 C-F1).",
       "type": "object",
@@ -210,6 +217,13 @@
             "null"
           ],
           "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "description": "Session variables for this host, merged over the global `[env]` by name\n(011 C-E3).",
+          "type": "object",
+          "additionalProperties": {
             "type": "string"
           }
         },

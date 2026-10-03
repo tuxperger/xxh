@@ -63,15 +63,15 @@
 
 ## Phase 3: User Story 2 — Постоянные переменные в конфиге (P2)
 
-- [ ] T008 [US2] `crates/xxh-config/src/lib.rs`: `Config.env`, `HostOverride.env`
+- [X] T008 [US2] `crates/xxh-config/src/lib.rs`: `Config.env`, `HostOverride.env`
   (`BTreeMap<String, String>`), слияние в `resolve`: глобально → хост по имени →
   флаги по имени (C-E3); unit-тесты; регенерация `nix/config-schema.json`;
   `crates/xxh-config/src/template.rs` — пример `[env]` и `[hosts.web.env]`
-- [ ] T009 [US2] `crates/xxh-cli/src/commands/config.rs`: `show` печатает
+- [X] T009 [US2] `crates/xxh-cli/src/commands/config.rs`: `show` печатает
   `env.NAME = <set>` без значений (C-E10); `validate` проверяет `env` для
   глобального набора и каждого хоста; дополнить `env_container.rs`: глобальное
   значение, переопределение хоста, флаг сильнее; `config show --host` без значений
-- [ ] T010 [P] [US2] `nix/modules/common.nix`: опции `env` (`attrsOf str`, имя
+- [X] T010 [P] [US2] `nix/modules/common.nix`: опции `env` (`attrsOf str`, имя
   `strMatching`) и `hosts.<имя>.env`, рендер; `tests/nix-modules/eval_options.nix`
   (неверное имя падает), `tests/nix-modules/roundtrip.nix` (C-E11)
 

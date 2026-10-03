@@ -1,8 +1,10 @@
-//! Integration (011 T007, US1): the **real `xxh` binary** sets session variables
+//! Integration (011 T007/T009, US1+US2): the **real `xxh` binary** sets session variables
 //! from `-e/--env` inside a running container over the container transport —
 //! byte for byte, with a terminal too, and winning over what a component sets
 //! (C-E6: a declared `.gitconfig` exports `GIT_CONFIG_GLOBAL`, `-e` beats it).
-//! The container is clean afterwards and its image unchanged (Принцип I, VIII).
+//! The config's `[env]`, a host's table over it and flags over both (C-E3);
+//! `config show` names no value. The container is clean afterwards and its
+//! image unchanged (Принцип I, VIII).
 //! Runtime-gated; skips when none is available.
 
 mod common;
@@ -93,6 +95,43 @@ fn session_variables_reach_a_container_and_leave_nothing_behind() {
     ]);
     assert_eq!(code, Some(0), "stderr: {err}");
     assert!(out.contains("vi-in-a-tty"), "{out}");
+
+    // ── US2: the config's variables, this host's over them, flags over both ─
+    std::fs::write(
+        &cfg,
+        format!(
+            "[env]\nEDITOR = \"nvim\"\nPAGER = \"less\"\nTOKEN = \"t0ken-v4lue\"\n\n\
+             [hosts.{}.env]\nEDITOR = \"vi\"\n",
+            fx.name
+        ),
+    )
+    .unwrap();
+    let probe = "printf '[%s][%s][%s]' \"$EDITOR\" \"$PAGER\" \"$TOKEN\"";
+    let (code, out, err) = xxh(&[&target, "--", "sh", "-c", probe]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert_eq!(out, "[vi][less][t0ken-v4lue]", "the host's EDITOR wins");
+    let (code, out, err) = xxh(&[&target, "-e", "EDITOR=nano", "--", "sh", "-c", probe]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert_eq!(out, "[nano][less][t0ken-v4lue]", "the flag wins");
+
+    // `config show` names the variables, never their values (C-E10).
+    let (code, out, err) = xxh(&["config", "show", "--host", &fx.name]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    for name in ["EDITOR", "PAGER", "TOKEN"] {
+        assert!(out.contains(&format!("env.{name} = <set>\n")), "{out}");
+    }
+    assert!(!out.contains("t0ken") && !out.contains("nvim"), "{out}");
+
+    // A reserved name in the config is caught by `validate` and by a login.
+    std::fs::write(&cfg, "[env]\nXXH_ROOT = \"/elsewhere\"\n").unwrap();
+    let (code, _, err) = xxh(&["config", "validate"]);
+    assert_eq!(code, Some(40), "{err}");
+    assert!(
+        err.contains("XXH_ROOT") && !err.contains("/elsewhere"),
+        "{err}"
+    );
+    let (code, _, err) = xxh(&[&target, "--", "true"]);
+    assert_eq!(code, Some(40), "{err}");
 
     // ── Clean; image unchanged (C-DT3) ──────────────────────────────────────
     assert_eq!(fx.cleanliness(), "CLEAN", "~/.xxh must be gone");

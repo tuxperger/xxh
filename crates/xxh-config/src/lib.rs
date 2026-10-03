@@ -153,6 +153,10 @@ pub struct HostOverride {
     /// `false` drops a global entry here (010 C-F3).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, HostFileEntry>,
+    /// Session variables for this host, merged over the global `[env]` by name
+    /// (011 C-E3).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 /// The canonical user configuration file (`~/.config/xxh/config.toml`).
@@ -191,6 +195,10 @@ pub struct Config {
     /// for (`.gitconfig`, `.config/nvim`) (010 C-F1).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, FileEntry>,
+    /// Variables set in every session (011 C-E1). Values may be secrets: xxh
+    /// never prints them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A plugin or shell package declared in the config (013 C-L1): its source is
@@ -260,6 +268,7 @@ impl Default for Config {
             plugins: BTreeMap::new(),
             shells: BTreeMap::new(),
             files: BTreeMap::new(),
+            env: BTreeMap::new(),
         }
     }
 }
@@ -432,7 +441,10 @@ impl Config {
             }
         }
 
-        let env: BTreeMap<String, String> = cli.env.iter().cloned().collect();
+        // Global, then the host by name, then the flags by name (C-E3).
+        let mut env = self.env.clone();
+        env.extend(ho.into_iter().flat_map(|h| h.env.clone()));
+        env.extend(cli.env.iter().cloned());
 
         Effective {
             shell,
@@ -508,6 +520,47 @@ mod tests {
         // No files: nothing about them is written.
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         assert!(!text.contains("files"), "{text}");
+    }
+
+    /// 011 C-E1/C-E3: global, then the host by name, then the flags by name.
+    #[test]
+    fn env_layers_merge_by_name() {
+        let cfg: Config = toml::from_str(
+            r#"
+[env]
+EDITOR = "nvim"
+LANG = "C.UTF-8"
+
+[hosts.web.env]
+EDITOR = "vi"
+EXTRA = "multi\nline"
+"#,
+        )
+        .unwrap();
+        let other = cfg.resolve("other", &CliOverrides::default()).env;
+        assert_eq!(other.len(), 2);
+        assert_eq!(other["EDITOR"], "nvim");
+
+        let web = cfg.resolve("web", &CliOverrides::default()).env;
+        assert_eq!(
+            (web["EDITOR"].as_str(), web["LANG"].as_str()),
+            ("vi", "C.UTF-8")
+        );
+        assert_eq!(web["EXTRA"], "multi\nline");
+
+        let cli = CliOverrides {
+            env: vec![("EDITOR".into(), "nano".into()), ("NEW".into(), "".into())],
+            ..CliOverrides::default()
+        };
+        let flagged = cfg.resolve("web", &cli).env;
+        assert_eq!(flagged["EDITOR"], "nano", "the flag beats the host");
+        assert_eq!(flagged["NEW"], "");
+        assert_eq!(flagged.len(), 4);
+
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("env"), "{text}");
     }
 
     #[test]

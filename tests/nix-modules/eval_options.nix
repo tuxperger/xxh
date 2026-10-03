@@ -39,6 +39,7 @@ let
     };
     files.".gitconfig" = "~/dotfiles/gitconfig";
     files.".myrc" = { source = "~/.myrc"; env = "MYTOOL_RC"; };
+    env.EDITOR = "nvim";
   };
   validToml = common.render valid;
 
@@ -81,10 +82,19 @@ let
     enable = true;
     files.".gitconfig" = false; # only a host may drop an entry
   };
+  badEnvName = mustFail "bad-env-name" {
+    enable = true;
+    env."MY-VAR" = "x"; # not a variable name
+  };
+  badEnvReserved = mustFail "bad-env-reserved" {
+    enable = true;
+    hosts.web.env.XXH_ROOT = "/x"; # xxh's own
+  };
 in
 pkgs.runCommand "xxh-nix-module-eval-options"
   {
-    inherit badCleanup badTimeout badHostField badUser badRuntime badFileEnv badFileGlobalFalse;
+    inherit badCleanup badTimeout badHostField badUser badRuntime badFileEnv badFileGlobalFalse
+      badEnvName badEnvReserved;
   }
   ''
     # The valid declaration rendered a canonical config file.
@@ -98,6 +108,7 @@ pkgs.runCommand "xxh-nix-module-eval-options"
     grep -q '".gitconfig" = "~/dotfiles/gitconfig"' ${validToml}
     grep -q 'env = "MYTOOL_RC"' ${validToml}
     grep -q '".config/nvim" = false' ${validToml}
-    echo "eval options: valid accepted, invalid rejected ($badCleanup/$badTimeout/$badHostField/$badUser/$badRuntime/$badFileEnv/$badFileGlobalFalse)"
+    grep -q 'EDITOR = "nvim"' ${validToml}
+    echo "eval options: valid accepted, invalid rejected ($badCleanup/$badTimeout/$badHostField/$badUser/$badRuntime/$badFileEnv/$badFileGlobalFalse/$badEnvName/$badEnvReserved)"
     touch $out
   ''

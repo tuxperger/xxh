@@ -48,6 +48,8 @@ runtime = "auto"
 # container_runtime = "podman"
 # [hosts.web.files]
 # ".gitconfig" = "~/work/gitconfig"
+# [hosts.web.env]
+# EDITOR = "vi"
 
 # Personal files made visible to programs in the session — nothing is written
 # to the target's home directory. The key is the name a program looks for, the
@@ -55,6 +57,12 @@ runtime = "auto"
 # [files]
 # ".gitconfig" = "~/.gitconfig"
 # ".config/nvim" = "~/.config/nvim"
+
+# Variables set in every session, before your shell starts; `-e NAME=VALUE`
+# beats them, a host's table is merged over this one. Names starting with
+# XXH_ are reserved. Values are never printed by xxh.
+# [env]
+# EDITOR = "nvim"
 
 # Plugins and shell packages that `xxh sync` installs, by name; the source is
 # what `xxh plugin add` / `xxh shell add` accept.
