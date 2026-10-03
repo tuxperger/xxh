@@ -1154,6 +1154,75 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     }
 
+    /// The bootstrap's `env` and the per-session cleanup, run by a local `sh`
+    /// against a scratch root (011 T002, C-E9, research R3).
+    #[test]
+    fn env_file_is_private_and_removed_per_session() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = scratch_dir("xxh-env-boot").join(".xxh");
+        let boot = |args: &[&str], stdin: &[u8]| {
+            let script = std::env::temp_dir().join(format!("xxh-boot-{}.sh", std::process::id()));
+            std::fs::write(&script, BOOTSTRAP_SH).unwrap();
+            let mut child = std::process::Command::new("sh")
+                .arg(&script)
+                .args(args)
+                .env("XXH_ROOT", &root)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(stdin).unwrap();
+            let out = child.wait_with_output().unwrap();
+            let _ = std::fs::remove_file(&script);
+            out
+        };
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        for sid in ["s1", "s2"] {
+            let out = boot(&["env", sid], b"A='1'; export A\n");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let env1 = root.join("run/s1/env");
+        assert_eq!(std::fs::read(&env1).unwrap(), b"A='1'; export A\n");
+        assert_eq!(mode(&env1), 0o600, "only the owner reads the values");
+        assert_eq!(mode(&root.join("run/s1")), 0o700);
+        assert_eq!(mode(&root.join("run")), 0o700);
+
+        // A session id is a name, never a path.
+        for bad in ["", "../x", "a/b", "a b"] {
+            let out = boot(&["env", bad], b"");
+            assert_eq!(out.status.code(), Some(2), "`{bad}` accepted");
+        }
+
+        // A kept session cleans only its own run dir: s2 may still be starting.
+        let out = boot(&["run", "s1", "1", "true"], b"");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!root.join("run/s1").exists(), "own run dir removed");
+        assert!(
+            root.join("run/s2/env").exists(),
+            "another session's file kept"
+        );
+
+        // s2 crashed after starting: reconcile removes its file with its marker.
+        std::fs::write(root.join("sessions/s2"), "999999999\n").unwrap();
+        let out = boot(&["reconcile"], b"");
+        assert!(out.status.success());
+        assert!(!root.join("run/s2").exists(), "dead session's file removed");
+        assert!(root.join("cache").exists(), "the kept cache stays");
+
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
     #[tokio::test]
     async fn run_exec_streams_the_command_under_the_cleanup_trap() {
         let _env = no_shell_packages();

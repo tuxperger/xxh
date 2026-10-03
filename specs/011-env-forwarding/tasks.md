@@ -12,14 +12,14 @@
 
 ## Phase 1: Foundational
 
-- [ ] T001 [P] `crates/xxh-core/src/env.rs` (+ `pub mod env` в `crates/xxh-core/src/lib.rs`):
+- [X] T001 [P] `crates/xxh-core/src/env.rs` (+ `pub mod env` в `crates/xxh-core/src/lib.rs`):
   `check_name`, `check_value` (C-E2: `[A-Za-z_][A-Za-z0-9_]*`, не `XXH_*`, без NUL;
   сообщение с именем, без значения), `check(&BTreeMap)`, `render(&BTreeMap) ->
   String` — `NAME='…'; export NAME` с `'` → `'\''` (R1); unit-тесты: каждое
   правило, сообщение не содержит значения, round-trip через настоящий `sh -c`
   (пробелы, кавычки обоих видов, `$`, `` ` ``, `\`, перевод строки, пустое значение,
   не-UTF-8 недопустим — значение `String`)
-- [ ] T002 [P] `bootstrap/bootstrap.sh`: команда `env <sid>` — проверка `sid`
+- [X] T002 [P] `bootstrap/bootstrap.sh`: команда `env <sid>` — проверка `sid`
   (`[A-Za-z0-9-]`), `mkdir -p run/<sid>`, `chmod 700`, `umask 077; cat >
   run/<sid>/env`; `xxh_cleanup` в режиме keep удаляет только `run/<sid>`;
   `xxh_reconcile` удаляет `run/<sid>` вместе с меткой мёртвой сессии (R3, C-E9);

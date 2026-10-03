@@ -88,8 +88,9 @@ xxh_cleanup() {
     [ -n "$_sid" ] && rm -f "$SESS_DIR/$_sid.cmd" 2>/dev/null || true
     if [ "$_keep" = "1" ]; then
         # Keep mode: retain the content-addressed cache for faster re-entry,
-        # drop only per-session state.
-        rm -rf "$XXH_ROOT/run" 2>/dev/null || true
+        # drop only this session's state: another kept session may still be
+        # starting, and its run dir holds its environment variables (011 R3).
+        [ -n "$_sid" ] && rm -rf "$XXH_ROOT/run/$_sid" 2>/dev/null || true
     else
         # Ephemeral (default): the host must be left exactly as before.
         rm -rf "$XXH_ROOT" 2>/dev/null || true
@@ -105,6 +106,8 @@ xxh_reconcile() {
         _pid=$(cat "$_m" 2>/dev/null || echo "")
         if [ -z "$_pid" ] || ! kill -0 "$_pid" 2>/dev/null; then
             rm -rf "$_m" 2>/dev/null || true
+            # Its environment file, if the crash came before the prelude (011 C-E9).
+            rm -rf "$XXH_ROOT/run/${_m##*/}" 2>/dev/null || true
         fi
     done
     # If no sessions remain and no keep-cache is present, drop the root entirely.
@@ -434,6 +437,18 @@ xxh_verify() {
     done
 }
 
+# Receive this session's environment variables on stdin (011 C-E8/C-E9): only
+# the owner can read them, and the session prelude deletes them once sourced.
+xxh_env() {
+    _sid="${1:-}"
+    case "$_sid" in
+        ''|*[!A-Za-z0-9-]*) echo "xxh-bootstrap: not a session id: '$_sid'" >&2; exit 2 ;;
+    esac
+    mkdir -p "$XXH_ROOT/run/$_sid"
+    chmod 700 "$XXH_ROOT/run" "$XXH_ROOT/run/$_sid"
+    (umask 077 && cat >"$XXH_ROOT/run/$_sid/env")
+}
+
 # Remove cached components that failed verification (C-V5).
 xxh_discard() {
     for _h in "$@"; do
@@ -460,5 +475,6 @@ case "$_cmd" in
     probe)      xxh_probe ;;
     verify)     xxh_need_root; xxh_verify "$@" ;;
     discard)    xxh_need_root; xxh_discard "$@" ;;
+    env)        xxh_need_root; xxh_init_dirs; xxh_env "$@" ;;
     *)          echo "xxh-bootstrap: unknown subcommand '$_cmd'" >&2; exit 2 ;;
 esac
