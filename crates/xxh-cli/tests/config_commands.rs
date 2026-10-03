@@ -4,7 +4,6 @@
 //! No target is involved: these commands only read and write the client's
 //! config file, so each test runs against its own isolated config directory.
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -61,8 +60,7 @@ impl Client {
     /// `xxh config edit` with a script as the editor; `$1` is the file to edit.
     fn edit_with(&self, body: &str) -> (Option<i32>, String, String) {
         let editor = self.root.join("editor.sh");
-        std::fs::write(&editor, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&editor, body);
         output(
             self.command()
                 .env("EDITOR", &editor)
@@ -88,6 +86,25 @@ impl Drop for Client {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// Write an executable script through a child `sh`. This process never holds a
+/// write descriptor to it, so a concurrent `fork` in another test cannot make
+/// the kernel refuse to run it ("text file busy").
+fn write_script(path: &std::path::Path, body: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh");
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin
+        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .expect("write script");
+    drop(stdin);
+    assert!(child.wait().expect("sh").success());
 }
 
 fn output(cmd: &mut Command) -> (Option<i32>, String, String) {
