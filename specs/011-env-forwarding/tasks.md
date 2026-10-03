@@ -79,7 +79,7 @@
 
 ## Phase 4: Polish
 
-- [ ] T011 `README.md`: раздел про `-e/--env` и `[env]` — приоритет, порядок с
+- [X] T011 `README.md`: раздел про `-e/--env` и `[env]` — приоритет, порядок с
   плагинами и rc шелла, `XXH_*` запрещены, секреты (форма `-e NAME`, root цели);
   `spec.md` — `**Status**: Implemented`
 

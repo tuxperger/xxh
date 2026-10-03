@@ -64,7 +64,7 @@ plain `cargo build`/`cargo test` also works.
 
 ```sh
 # SSH host (default family)
-xxh [user@]<host> [-l user] [-i ~/.ssh/key] [-A] [--shell zsh] [--keep] [--transport russh|ssh] [--connect-timeout 10] [-v|-vv|--debug]
+xxh [user@]<host> [-l user] [-i ~/.ssh/key] [-A] [-e NAME[=VALUE]]... [--shell zsh] [--keep] [--transport russh|ssh] [--connect-timeout 10] [-v|-vv|--debug]
 
 # Running container (same flags, minus the SSH-only ones; plus --runtime)
 xxh docker:app1                 # a running docker container by name or id
@@ -299,6 +299,38 @@ entry is not sent again. Limits: the target's own `~/.config` is hidden from
 programs in a session that brings `.config` entries, and contents are not
 templated per host. `xxh config show [--host H]` prints the set a target gets.
 
+### Session variables: `-e` and `[env]`
+
+```sh
+xxh web -e DEBUG=1 -e 'GREETING=hello "world"'   # this session only
+xxh web -e AWS_PROFILE -- aws s3 ls              # a bare name passes this machine's value
+```
+
+```toml
+[env]
+EDITOR = "nvim"
+
+[hosts.web.env]
+EDITOR = "vi"          # this host's value; `-e EDITOR=…` beats both
+```
+
+The variables are set in the interactive session and in one-command runs
+(`--`, `-c`, `-t`) alike, byte for byte — quotes, `$`, backslashes and newlines
+included. They are applied after everything the shell package, plugins and
+`[files]` export, so yours win; your shell's own rc files run later still.
+Names starting with `XXH_` belong to xxh and are refused, like a malformed name,
+before connecting (exit `40`); `-e NAME` for a variable not set here is skipped
+with a warning.
+
+Values never appear in xxh's output at any verbosity (`xxh config show` prints
+`env.NAME = <set>`). On the target they travel on the connection's stdin into a
+file only you can read, which the session reads and deletes before your shell or
+command starts: no value is ever on a command line other users could see in
+`ps`, and a kept environment keeps none of them. Two limits: the target's root
+can read any process's environment, and a value written out as `-e NAME=VALUE`
+is visible in *this* machine's process list and shell history — for a secret,
+export it here and pass `-e NAME`.
+
 ### Managing the config
 
 The config is one TOML file; these commands create, check and change it without
@@ -473,6 +505,7 @@ programs.xxh = {
   files.".gitconfig" = "~/dotfiles/gitconfig";
   files.".myrc" = { source = "~/.myrc"; env = "MYTOOL_RC"; };
   hosts.web.files.".gitconfig" = "~/dotfiles/gitconfig-work";
+  env.EDITOR = "nvim";
 };
 # HM: imports = [ xxh.homeManagerModules.default ];   (runs `xxh sync` on activation)
 # NixOS: imports = [ xxh.nixosModules.default ];      (writes /etc/xxh/config.toml)
