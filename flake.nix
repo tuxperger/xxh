@@ -42,7 +42,9 @@
             path: type:
             (craneLib.filterCargoSources path type)
             || (builtins.match ".*bootstrap\\.sh$" path != null)
-            || (builtins.match ".*config-schema\\.json$" path != null);
+            || (builtins.match ".*config-schema\\.json$" path != null)
+            # Completion stubs embedded via include_str! (007).
+            || (builtins.match ".*/completions/xxh\\.(bash|zsh|fish)$" path != null);
         };
 
         # Name the derivations after the binary rather than crane's default
@@ -57,17 +59,39 @@
         commonArgs = pkgMeta // {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.installShellFiles
+          ];
           # Shell-build tests download `file://` archives with the client's curl
           # (008 research R2), as `xxh shell fetch` does.
-          nativeCheckInputs = [ pkgs.curl ];
+          # The completion stubs are run in the real shells (007).
+          nativeCheckInputs = [
+            pkgs.curl
+            pkgs.bashInteractive
+            pkgs.zsh
+            pkgs.fish
+          ];
           # ⭐ nix-source: the CLI can build plugins from nixpkgs (pkgsStatic) when
           # the *client* has Nix; without Nix the source degrades to Unavailable.
           cargoExtraArgs = "--features nix-source";
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-        xxh = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+        xxh = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            # Completions and man pages ship with the package (007 C-K17).
+            postInstall = ''
+              installShellCompletion --cmd xxh \
+                --bash <($out/bin/xxh completions bash) \
+                --zsh <($out/bin/xxh completions zsh) \
+                --fish <($out/bin/xxh completions fish)
+              $out/bin/xxh man --dir $out/share/man/man1 >/dev/null
+            '';
+          }
+        );
 
         # Static/cross client builds (T060, Принципы I/II): one pkgsCross/pkgsStatic
         # infrastructure serves both the client and the ⭐ Nix plugin provider.
@@ -100,6 +124,12 @@
             # musl lacks glibc's *_chk fortify symbols.
             hardeningDisable = [ "fortify" ];
             doCheck = false; # cross tests do not run on the build host
+            # A cross binary cannot print its own completions and man pages;
+            # they are the same files as the native package's (007 C-K17).
+            postInstall = ''
+              mkdir -p $out/share
+              cp -r --no-preserve=mode ${xxh}/share/. $out/share/
+            '';
           });
       in
       {
@@ -111,6 +141,11 @@
             rustToolchain
             openssh
             docker-client
+            # The completion stubs are tested in the real shells (007); bash must
+            # be the readline build to have `complete`.
+            bashInteractive
+            zsh
+            fish
           ];
         };
 
@@ -135,6 +170,19 @@
           test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
           # ⭐ Declarative-module checks (T058/T059): options eval-validate and the
           # MANDATORY round-trip module → config.toml → xxh-config parser (§SC-013/015).
+          # Completions and man pages are in the package (007 C-K17).
+          completions-and-man = pkgs.runCommand "xxh-completions-and-man" { } ''
+            for f in \
+              share/bash-completion/completions/xxh.bash \
+              share/zsh/site-functions/_xxh \
+              share/fish/vendor_completions.d/xxh.fish \
+              share/man/man1/xxh.1.gz \
+              share/man/man1/xxh-plugin-add.1.gz
+            do
+              test -s ${xxh}/$f || { echo "missing $f" >&2; exit 1; }
+            done
+            touch $out
+          '';
           nix-module-eval = import ./tests/nix-modules/eval_options.nix {
             inherit pkgs;
             inherit (pkgs) lib;
