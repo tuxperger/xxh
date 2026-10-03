@@ -50,9 +50,15 @@ pub fn check(vars: &BTreeMap<String, String>) -> Result<(), String> {
 /// The set as `sh` text: `NAME='value'; export NAME`, one per line. Inside single
 /// quotes only `'` itself needs care; it becomes `'\''`. Call [`check`] first.
 pub fn render(vars: &BTreeMap<String, String>) -> String {
-    vars.iter()
-        .map(|(name, value)| format!("{name}='{}'; export {name}\n", value.replace('\'', "'\\''")))
-        .collect()
+    use std::fmt::Write as _;
+    vars.iter().fold(String::new(), |mut out, (name, value)| {
+        let _ = writeln!(
+            out,
+            "{name}='{}'; export {name}",
+            value.replace('\'', "'\\''")
+        );
+        out
+    })
 }
 
 #[cfg(test)]
