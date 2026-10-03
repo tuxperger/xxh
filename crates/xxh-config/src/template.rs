@@ -46,6 +46,15 @@ runtime = "auto"
 # user = "www"
 # identity = "~/.ssh/web_key"
 # container_runtime = "podman"
+# [hosts.web.files]
+# ".gitconfig" = "~/work/gitconfig"
+
+# Personal files made visible to programs in the session — nothing is written
+# to the target's home directory. The key is the name a program looks for, the
+# value the path on this machine. A host's table is merged over this one.
+# [files]
+# ".gitconfig" = "~/.gitconfig"
+# ".config/nvim" = "~/.config/nvim"
 
 # Plugins and shell packages that `xxh sync` installs, by name; the source is
 # what `xxh plugin add` / `xxh shell add` accept.
@@ -116,7 +125,13 @@ mod tests {
             panic!("a host is a table");
         };
         for key in host {
-            assert!(mentioned(&key), "hosts.<name>.{key}");
+            match keys::lookup(&["hosts".into(), "web".into(), key.clone()]) {
+                Ok(Kind::Map) => assert!(
+                    TEMPLATE.contains(&format!("[hosts.web.{key}]")),
+                    "[hosts.web.{key}]"
+                ),
+                _ => assert!(mentioned(&key), "hosts.<name>.{key}"),
+            }
         }
     }
 }

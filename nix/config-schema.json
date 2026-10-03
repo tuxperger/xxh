@@ -32,6 +32,13 @@
         "type": "string"
       }
     },
+    "files": {
+      "description": "Personal files made visible in the session, by the name a program looks\nfor (`.gitconfig`, `.config/nvim`) (010 C-F1).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/FileEntry"
+      }
+    },
     "hosts": {
       "type": "object",
       "additionalProperties": {
@@ -111,6 +118,53 @@
         "source"
       ]
     },
+    "FileEntry": {
+      "description": "One declared personal file or directory (010 C-F1): the path on the client,\nor a table when it needs more than a path.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/FileSpec"
+        }
+      ]
+    },
+    "FileSpec": {
+      "description": "A declared file in full.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Variable that gets the delivered path, for a program without a known one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret": {
+          "description": "Deliver it even though it looks like a secret (Принцип V).",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "Path on the client; `~/` is the client's home directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
+      ]
+    },
+    "HostFileEntry": {
+      "description": "A host's say about one file: its own entry, or `false` to go without the\nglobal one (010 C-F3).",
+      "anyOf": [
+        {
+          "description": "`false`: not on this host. (`true` changes nothing.)",
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/FileEntry"
+        }
+      ]
+    },
     "HostOverride": {
       "description": "Per-host overrides applied on top of the global config (§FR-023).\n\nEvery field is optional; `None` means \"inherit the global value\". List-valued\nfields (`enabled_plugins`) **replace** the global list rather than merging\n(resolves analysis finding C4 — simple, predictable precedence).",
       "type": "object",
@@ -157,6 +211,13 @@
           ],
           "items": {
             "type": "string"
+          }
+        },
+        "files": {
+          "description": "Personal files for this host, merged over the global `[files]` by name;\n`false` drops a global entry here (010 C-F3).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/HostFileEntry"
           }
         },
         "identity": {
