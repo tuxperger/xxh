@@ -29,6 +29,9 @@ semver = { version = "1", features = ["serde"] }
 blake3 = "1"
 # CLI + observability
 clap = { version = "4", features = ["derive"] }
+# Completion candidates from the clap tree and man pages (007 research R1/R6)
+clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
+clap_mangen = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Errors (distinct classes: transport/shell/plugin/config)

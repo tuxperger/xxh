@@ -5,7 +5,10 @@
 use std::fmt::Write as _;
 
 use clap::Subcommand;
+use clap_complete::engine::ArgValueCompleter;
 use xxh_core::ShellError;
+
+use crate::complete;
 use xxh_core::shellmgr::{self, Builds, Fetched, Installed};
 use xxh_plugins::source::SourceSpec;
 
@@ -24,6 +27,7 @@ pub enum ShellAction {
     },
     /// Download builds of an installed shell (by default every Linux build).
     Fetch {
+        #[arg(add = ArgValueCompleter::new(complete::shells))]
         shell: String,
         /// Platforms to fetch (`os-arch`, repeatable).
         #[arg(long = "platform", value_name = "OS-ARCH")]
@@ -35,10 +39,16 @@ pub enum ShellAction {
     /// List installed shells and the platforms they have builds for.
     List,
     /// Re-fetch shell packages from their sources (and changed builds).
-    Update { shell: Option<String> },
+    Update {
+        #[arg(add = ArgValueCompleter::new(complete::shells))]
+        shell: Option<String>,
+    },
     /// Remove an installed shell package (a package linked in by hand loses only
     /// the link).
-    Remove { shell: String },
+    Remove {
+        #[arg(add = ArgValueCompleter::new(complete::shells))]
+        shell: String,
+    },
 }
 
 fn spec(source: &str) -> Result<SourceSpec, ShellError> {
