@@ -277,6 +277,9 @@ pub struct CliOverrides {
     pub identity: Option<PathBuf>,
     /// `--runtime` (container family only); highest layer of C-A3 precedence.
     pub container_runtime: Option<RuntimeSetting>,
+    /// `-e/--env`, in the order given: a later one of the same name wins
+    /// (011 C-E3). Values only — a bare `-e NAME` is resolved by the CLI.
+    pub env: Vec<(String, String)>,
 }
 
 /// The effective settings for one connection, after applying precedence.
@@ -297,6 +300,9 @@ pub struct Effective {
     /// Personal files for this target: the global set with the host's entries
     /// merged over it by name (010 C-F3).
     pub files: BTreeMap<String, FileSpec>,
+    /// Session variables for this target after precedence (011 C-E3). Values
+    /// may be secrets: never print them (§FR-008).
+    pub env: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -426,6 +432,8 @@ impl Config {
             }
         }
 
+        let env: BTreeMap<String, String> = cli.env.iter().cloned().collect();
+
         Effective {
             shell,
             enabled_plugins,
@@ -436,6 +444,7 @@ impl Config {
             identity,
             container_runtime,
             files,
+            env,
         }
     }
 }

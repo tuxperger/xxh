@@ -31,29 +31,29 @@
 
 ## Phase 2: User Story 1 — Переменная на одну сессию (P1) 🎯 MVP
 
-- [ ] T003 [US1] `crates/xxh-config/src/lib.rs`: `CliOverrides.env:
+- [X] T003 [US1] `crates/xxh-config/src/lib.rs`: `CliOverrides.env:
   Vec<(String, String)>` и `Effective.env: BTreeMap<String, String>` (пока только
   из флагов; конфиг — в US2); поправить конструкторы `Effective` в тестах и
   `crates/xxh-cli/tests/common/mod.rs::eff`
-- [ ] T004 [US1] `crates/xxh-core/src/session.rs`: `session_id` создаётся до
+- [X] T004 [US1] `crates/xxh-core/src/session.rs`: `session_id` создаётся до
   доставки; при непустом `eff.env` — `upload_stream(boot("env <sid>"),
   env::render(..))` после доставки компонентов; в прелюдию последним — `if [ -f
   R/run/SID/env ]; then . R/run/SID/env; rm -f R/run/SID/env; fi;` (C-E5–C-E7);
   стадия `-v` — `environment: N variable(s)`; unit-тесты с mock-транспортом:
   значения уходят только данными `upload_stream`, ни одна команда `exec`/прелюдия
   их не содержит, пустой набор — ни одного лишнего вызова
-- [ ] T005 [US1] `crates/xxh-cli/src/main.rs`: флаг `-e, --env NAME[=VALUE]`
+- [X] T005 [US1] `crates/xxh-cli/src/main.rs`: флаг `-e, --env NAME[=VALUE]`
   (глобальный, повторяемый); `NAME` без `=` — значение клиента, отсутствует —
   `xxh: warning: env: NAME is not set here — skipped` (C-E4); проверка
   `xxh_core::env::check` до подключения — класс config (40); unit-тесты разбора
   флага (`=` в значении, пустое значение, последний одноимённый побеждает)
-- [ ] T006 [US1] Интеграция `crates/xxh-cli/tests/env_ssh.rs` (бинарь, sshd-цель,
+- [X] T006 [US1] Интеграция `crates/xxh-cli/tests/env_ssh.rs` (бинарь, sshd-цель,
   один `#[test]`): `-e` с многострочным значением и кавычками приходит побайтно в
   режиме `--` и `-c`; `-e NAME` берёт значение клиента; отсутствующая на клиенте —
   предупреждение; `-e XXH_ROOT=x` и `-e 1X=y` — код 40, цель не тронута; во время
   команды `ps -ef` / `/proc/*/cmdline` на цели не содержит значения; `-vv` stderr
   не содержит значения; после `--keep` нет `run/<sid>`; после эфемерного — чисто
-- [ ] T007 [US1] Интеграция `crates/xxh-cli/tests/env_container.rs` (бинарь,
+- [X] T007 [US1] Интеграция `crates/xxh-cli/tests/env_container.rs` (бинарь,
   контейнер, один `#[test]`): значения побайтно, `-t`, переменная плагина/файла
   010 переопределяется пользовательской (C-E6: `-e GIT_CONFIG_GLOBAL=…` при
   объявленном `.gitconfig`); контейнер чист, образ не изменён; строки в

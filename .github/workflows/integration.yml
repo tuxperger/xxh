@@ -67,7 +67,7 @@ jobs:
           --test plugin_git_local --test error_classes
           --test exec_ssh --test exec_interrupt --test remote_env_ssh
           --test doctor_ssh --test ssh_agent_auth --test ssh_proxy_jump
-          --test cache_integrity --test files_ssh
+          --test cache_integrity --test files_ssh --test env_ssh
           -- --test-threads=1
 
       - name: Run container scenarios
@@ -78,7 +78,7 @@ jobs:
           --test container_errors --test exec_container
           --test remote_env_container --test remote_env_cli --test doctor_cli
           --test shell_package --test cache_integrity_container --test plugin_sync
-          --test completions_container --test files_container
+          --test completions_container --test files_container --test env_container
           -- --test-threads=1
 
       - name: Save base image to cache

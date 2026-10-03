@@ -447,6 +447,28 @@ impl<T: Transport> Session<T> {
                 }
             }
         }
+        // 4b) The user's variables (011 C-E8/C-E9): through stdin into this
+        //     session's own file, never on a command line the target's `ps`
+        //     shows, never in the cache a kept environment keeps. No value is
+        //     named in progress or logs (§FR-008).
+        let session_id = session_id();
+        let env_file = format!("{remote_root}/run/{session_id}/env");
+        if !eff.env.is_empty() {
+            progress(&format!("environment: {} variable(s)", eff.env.len()));
+            let out = transport
+                .upload_stream(
+                    &boot(&format!("env {session_id}")),
+                    crate::env::render(&eff.env).into_bytes(),
+                )
+                .await?;
+            if out.exit_code != 0 {
+                return Err(ShellError::Other(format!(
+                    "passing the session variables to the target failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+                .into());
+            }
+        }
         run_stage_hooks(&active, LifecycleStage::PostDeploy, progress).await;
 
         // 5) Assemble the prelude in delivery order: packaged shells extend PATH,
@@ -475,6 +497,13 @@ impl<T: Transport> Session<T> {
             // (PATH for tool packages, TERMINFO/SSL_CERT_FILE for nix ones).
             prelude.push_str(&source(&comp.hash));
         }
+        // Last, so the user's variables win over every component's (C-E6); the
+        // file is gone as soon as it is read (C-E9).
+        if !eff.env.is_empty() {
+            prelude.push_str(&format!(
+                "if [ -f {env_file} ]; then . {env_file}; rm -f {env_file}; fi; "
+            ));
+        }
 
         let shell_cmd = match launch {
             ShellLaunch::Packaged { hash, bin_rel } => {
@@ -488,7 +517,7 @@ impl<T: Transport> Session<T> {
             platform,
             keep: matches!(eff.cleanup, CleanupMode::Keep),
             remote_root,
-            session_id: session_id(),
+            session_id,
             shell_cmd,
             prelude,
             report,
@@ -782,6 +811,9 @@ mod tests {
         ResolvedTarget::Ssh(ResolvedSshTarget::new(alias))
     }
 
+    /// Each `upload_stream` command with the data it streamed.
+    type Uploads = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
     /// Scripted transport: `detect` answers with a Linux host, `command -v` is
     /// answered from `host_shells`, everything else succeeds; every command that
     /// could write to the host is recorded.
@@ -802,6 +834,9 @@ mod tests {
         corrupt_on_recv: bool,
         /// `recv` fails with this exit code.
         recv_fails: bool,
+        /// Data streamed with each `upload_stream`, by command (011: what reaches
+        /// the target only on stdin).
+        uploads: Uploads,
     }
 
     /// The `verify` answer for one kept component.
@@ -892,6 +927,10 @@ mod tests {
             data: Vec<u8>,
         ) -> Result<ExecOutput, TransportError> {
             self.commands.lock().unwrap().push(cmd.to_string());
+            self.uploads
+                .lock()
+                .unwrap()
+                .push((cmd.to_string(), data.clone()));
             if let Some(args) = cmd.split(" recv ").nth(1) {
                 if self.recv_fails {
                     return Ok(ExecOutput {
@@ -940,6 +979,7 @@ mod tests {
             identity: None,
             container_runtime: xxh_config::RuntimeSetting::Auto,
             files: Default::default(),
+            env: Default::default(),
         }
     }
 
@@ -1221,6 +1261,79 @@ mod tests {
         assert!(root.join("cache").exists(), "the kept cache stays");
 
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    /// 011 T004 (C-E5..C-E9): the values travel only as stdin data of the
+    /// bootstrap's `env`; no command line carries them; the prelude sources the
+    /// file last and removes it. Without variables nothing of this happens.
+    #[tokio::test]
+    async fn session_variables_travel_only_on_stdin() {
+        let _env = no_shell_packages();
+        let secret = "s3cr3t 'q' $HOME\nline2";
+        let mut e = eff("sh");
+        e.env.insert("TOKEN".into(), secret.into());
+        e.env.insert("EDITOR".into(), "vi".into());
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            ..Default::default()
+        };
+        let (log, uploads) = (t.commands.clone(), t.uploads.clone());
+        let comps = vec![minimal_env_component("gz").unwrap()];
+        let mut s = Session::establish(t, &ssh_target("h"), &e, &comps, &[], silent_progress())
+            .await
+            .unwrap();
+        s.run_exec(&ExecCommand::Argv(vec!["true".into()]), false)
+            .await
+            .unwrap();
+
+        let uploads = uploads.lock().unwrap();
+        let sent: Vec<_> = uploads
+            .iter()
+            .filter(|(cmd, _)| cmd.contains(" env "))
+            .collect();
+        assert_eq!(sent.len(), 1, "one upload of the variables");
+        let (cmd, data) = sent[0];
+        assert!(cmd.ends_with(&format!(" env {}", s.session_id)), "{cmd}");
+        assert_eq!(
+            String::from_utf8_lossy(data),
+            crate::env::render(&e.env),
+            "the rendered set is the data"
+        );
+        for c in log.lock().unwrap().iter() {
+            assert!(!c.contains("s3cr3t"), "a value on a command line: {c}");
+        }
+
+        let run = log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c.contains(" run "))
+            .cloned()
+            .unwrap();
+        let file = format!("/home/mock/.xxh/run/{}/env", s.session_id);
+        let sourced = run.find(&format!(". {file}; rm -f {file};")).expect(&run);
+        let last_component = run.rfind("env.sh; fi;").unwrap();
+        assert!(
+            sourced > last_component,
+            "sourced after every env.sh: {run}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_variables_no_trace_of_them() {
+        let _env = no_shell_packages();
+        let t = MockTransport {
+            host_shells: vec!["sh"],
+            ..Default::default()
+        };
+        let log = t.commands.clone();
+        let mut s = login(t).await.unwrap();
+        s.run_exec(&ExecCommand::Argv(vec!["true".into()]), false)
+            .await
+            .unwrap();
+        for c in log.lock().unwrap().iter() {
+            assert!(!c.contains(" env s") && !c.contains("/run/"), "{c}");
+        }
     }
 
     #[tokio::test]

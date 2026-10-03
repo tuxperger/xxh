@@ -97,6 +97,12 @@ struct Cli {
     #[arg(long, global = true, value_parser = ["auto", "docker", "podman"])]
     runtime: Option<String>,
 
+    /// Set a variable in the session or command: `NAME=VALUE`, or `NAME` to pass
+    /// on its value from here. Repeatable; beats the config. Values are never
+    /// printed.
+    #[arg(short = 'e', long = "env", global = true, value_name = "NAME[=VALUE]")]
+    env: Vec<String>,
+
     /// Connect timeout in seconds (default 10).
     #[arg(long, global = true)]
     connect_timeout: Option<u64>,
@@ -234,7 +240,40 @@ fn cli_overrides(cli: &Cli) -> CliOverrides {
             "podman" => RuntimeSetting::Podman,
             _ => RuntimeSetting::Auto,
         }),
+        env: cli_env(&cli.env),
     }
+}
+
+/// One `-e/--env` argument: the name, and the value when one was written
+/// (everything after the first `=`, possibly empty).
+fn parse_env_flag(arg: &str) -> (&str, Option<&str>) {
+    match arg.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (arg, None),
+    }
+}
+
+/// The `-e/--env` flags as name/value pairs, in order (011 C-E1, C-E4). A bare
+/// name takes this machine's value; one that is not set here is skipped with a
+/// warning that names it and nothing else. Names are checked in `prepare`.
+fn cli_env(flags: &[String]) -> Vec<(String, String)> {
+    flags
+        .iter()
+        .filter_map(|arg| match parse_env_flag(arg) {
+            (name, Some(value)) => Some((name.to_string(), value.to_string())),
+            (name, None) => match std::env::var_os(name).map(|v| v.into_string()) {
+                Some(Ok(value)) => Some((name.to_string(), value)),
+                Some(Err(_)) => {
+                    eprintln!("xxh: warning: env: {name} is not valid UTF-8 here — skipped");
+                    None
+                }
+                None => {
+                    eprintln!("xxh: warning: env: {name} is not set here — skipped");
+                    None
+                }
+            },
+        })
+        .collect()
 }
 
 /// Split a `[user@]host` command-line target. The user prefix ranks as a CLI
@@ -367,6 +406,11 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
 /// failure the error is already reported and the exit code is returned.
 fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Runtime), u8> {
     let cfg = commands::config::load().map_err(|e| report("config", &e, exit::CONFIG))?;
+    // Every `-e` name is checked, even one not set here (011 C-E2).
+    for arg in &cli.env {
+        xxh_core::env::check_name(parse_env_flag(arg).0)
+            .map_err(|e| report("config", &e, exit::CONFIG))?;
+    }
 
     // Parse the target family first (pure grammar), then reject flags that do not
     // apply to that family before touching the network (C-A2/C-A5).
@@ -385,6 +429,8 @@ fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Ru
     // A malformed `[files]` declaration is a config error, caught before any
     // connection (010 C-F2).
     xxh_core::files::check(&eff.files).map_err(|e| report("config", &e, exit::CONFIG))?;
+    // So is a session variable, whichever layer set it (011 C-E2).
+    xxh_core::env::check(&eff.env).map_err(|e| report("config", &e, exit::CONFIG))?;
     let rt = Runtime::new().map_err(|e| report("transport", &e, exit::TRANSPORT))?;
     Ok((eff, resolved, rt))
 }
@@ -652,6 +698,37 @@ mod tests {
     fn request(args: &[&str], bare: bool) -> Result<Option<ExecRequest>, String> {
         let cli = Cli::try_parse_from(args).expect("clap accepts the arguments");
         exec_request(&cli, bare)
+    }
+
+    /// 011 T005 (C-E1, C-E3): `-e` repeats, everything after the first `=` is
+    /// the value, the last of one name wins, and it reaches a command after `--`
+    /// only as the command's own argument.
+    #[test]
+    fn env_flags_parse_and_the_last_one_wins() {
+        let cli = Cli::try_parse_from([
+            "xxh", "box", "-e", "A=1", "--env", "B=x=y", "-e", "C=", "-e", "A=2", "--", "cmd",
+            "-e", "Z=9",
+        ])
+        .unwrap();
+        assert_eq!(cli.env, ["A=1", "B=x=y", "C=", "A=2"]);
+        assert_eq!(cli.args, ["cmd", "-e", "Z=9"]);
+        assert_eq!(parse_env_flag("B=x=y"), ("B", Some("x=y")));
+        assert_eq!(parse_env_flag("C="), ("C", Some("")));
+        assert_eq!(parse_env_flag("PATH"), ("PATH", None));
+
+        let eff = xxh_config::Config::default().resolve("box", &cli_overrides(&cli));
+        assert_eq!(eff.env["A"], "2");
+        assert_eq!(eff.env["B"], "x=y");
+        assert_eq!(eff.env["C"], "");
+    }
+
+    #[test]
+    fn a_bare_env_name_takes_this_machines_value() {
+        // PATH is set wherever the tests run; an odd name is not.
+        let got = cli_env(&["PATH".into(), "XXH_TEST_SURELY_UNSET_9f2c".into()]);
+        assert_eq!(got.len(), 1, "the unset one is skipped");
+        assert_eq!(got[0].0, "PATH");
+        assert_eq!(got[0].1, std::env::var("PATH").unwrap());
     }
 
     #[test]

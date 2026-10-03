@@ -206,6 +206,7 @@ fn full_session_over_russh_leaves_host_clean() {
             identity: None,
             container_runtime: xxh_config::RuntimeSetting::Auto,
             files: Default::default(),
+            env: Default::default(),
         };
         let env = vec![minimal_env_component("gz").unwrap()];
         let mut ssh = ResolvedSshTarget::new("127.0.0.1");

@@ -294,6 +294,7 @@ mod tests {
             identity: None,
             container_runtime: RuntimeSetting::Auto,
             files: Default::default(),
+            env: Default::default(),
         }
     }
 
