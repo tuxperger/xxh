@@ -308,6 +308,10 @@ impl Transport for ContainerCliTransport {
             });
         }
         let mut child = c.spawn()?;
+        // The command still owns its copies of the slave: while one is open here
+        // the master never reaches EOF and the output pump waits forever after
+        // the exec ends (found by 011: `-t` hung on every container).
+        drop(c);
         pty.close_slave();
 
         // Raw local terminal for the interactive phase; the guard restores it on
