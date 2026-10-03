@@ -42,8 +42,8 @@ async fn plan_hashes(
 ) -> Result<Vec<xxh_core::deploy::Component>, SessionError> {
     let platform = detect_platform(transport).await?;
     let plugins = super::plugin::session_plugins(eff)?;
-    let env = env_components()?;
-    Ok(plan_components(&platform, eff, &env, &plugins, progress)?.components)
+    let env = env_components(eff)?;
+    Ok(plan_components(&platform, eff, &env.components, &plugins, progress)?.components)
 }
 
 /// `xxh status`: inspect, then classify against the client's plan. A plan that

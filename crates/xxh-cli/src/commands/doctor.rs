@@ -220,8 +220,8 @@ pub async fn target_report(
     let (mut transport, target) = open_transport(target, eff, progress).await?;
     progress(&format!("connect {label}"));
     transport.connect(&target, &AuthPolicy::default()).await?;
-    let env = env_components()?;
-    let report = diagnose_target(&mut *transport, &label, eff, &env, plugins).await;
+    let env = env_components(eff)?;
+    let report = diagnose_target(&mut *transport, &label, eff, &env.components, plugins).await;
     let _ = transport.disconnect().await;
     report
 }
@@ -293,6 +293,7 @@ mod tests {
             user: None,
             identity: None,
             container_runtime: RuntimeSetting::Auto,
+            files: Default::default(),
         }
     }
 

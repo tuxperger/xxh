@@ -80,6 +80,7 @@ pub fn eff(shell: &str, cleanup: CleanupMode) -> Effective {
         user: None,
         identity: None,
         container_runtime: xxh_config::RuntimeSetting::Auto,
+        files: Default::default(),
     }
 }
 

@@ -567,7 +567,25 @@ fn list_running(bin: &std::path::Path, budget: Duration) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
+
+    /// Write an executable script through a child `sh`. This process never holds a
+    /// write descriptor to it, so a concurrent `fork` in another test cannot make
+    /// the kernel refuse to run it ("text file busy").
+    fn write_script(path: &std::path::Path, body: &str) {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh");
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin
+            .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .expect("write script");
+        drop(stdin);
+        assert!(child.wait().expect("sh").success());
+    }
 
     /// A stand-in runtime CLI: a script in its own temp dir.
     fn fake_runtime(tag: &str, body: &str) -> std::path::PathBuf {
@@ -580,8 +598,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("runtime");
-        std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&bin, body);
         bin
     }
 

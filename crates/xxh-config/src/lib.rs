@@ -149,6 +149,10 @@ pub struct HostOverride {
     /// only meaningful for `container:` targets, ignored for SSH.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_runtime: Option<RuntimeSetting>,
+    /// Personal files for this host, merged over the global `[files]` by name;
+    /// `false` drops a global entry here (010 C-F3).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, HostFileEntry>,
 }
 
 /// The canonical user configuration file (`~/.config/xxh/config.toml`).
@@ -183,6 +187,10 @@ pub struct Config {
     /// Shell packages declared with their sources, keyed by shell name (013).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shells: BTreeMap<String, Declared>,
+    /// Personal files made visible in the session, by the name a program looks
+    /// for (`.gitconfig`, `.config/nvim`) (010 C-F1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, FileEntry>,
 }
 
 /// A plugin or shell package declared in the config (013 C-L1): its source is
@@ -190,6 +198,51 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Declared {
     pub source: String,
+}
+
+/// One declared personal file or directory (010 C-F1): the path on the client,
+/// or a table when it needs more than a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum FileEntry {
+    Path(String),
+    Detailed(FileSpec),
+}
+
+/// A declared file in full.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FileSpec {
+    /// Path on the client; `~/` is the client's home directory.
+    pub source: String,
+    /// Variable that gets the delivered path, for a program without a known one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    /// Deliver it even though it looks like a secret (Принцип V).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+}
+
+impl FileEntry {
+    /// The entry in full, whichever way it was written.
+    pub fn spec(&self) -> FileSpec {
+        match self {
+            FileEntry::Path(source) => FileSpec {
+                source: source.clone(),
+                ..FileSpec::default()
+            },
+            FileEntry::Detailed(spec) => spec.clone(),
+        }
+    }
+}
+
+/// A host's say about one file: its own entry, or `false` to go without the
+/// global one (010 C-F3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum HostFileEntry {
+    /// `false`: not on this host. (`true` changes nothing.)
+    Wanted(bool),
+    Entry(FileEntry),
 }
 
 impl Default for Config {
@@ -206,6 +259,7 @@ impl Default for Config {
             hosts: BTreeMap::new(),
             plugins: BTreeMap::new(),
             shells: BTreeMap::new(),
+            files: BTreeMap::new(),
         }
     }
 }
@@ -240,6 +294,9 @@ pub struct Effective {
     /// Resolved container runtime after precedence (C-A3). Only consulted for
     /// `container:` targets; explicit `docker:`/`podman:` schemes override it.
     pub container_runtime: RuntimeSetting,
+    /// Personal files for this target: the global set with the host's entries
+    /// merged over it by name (010 C-F3).
+    pub files: BTreeMap<String, FileSpec>,
 }
 
 impl Config {
@@ -352,6 +409,23 @@ impl Config {
             .or_else(|| ho.and_then(|h| h.container_runtime))
             .unwrap_or(self.container.runtime);
 
+        let mut files: BTreeMap<String, FileSpec> = self
+            .files
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.spec()))
+            .collect();
+        for (name, entry) in ho.into_iter().flat_map(|h| &h.files) {
+            match entry {
+                HostFileEntry::Wanted(false) => {
+                    files.remove(name);
+                }
+                HostFileEntry::Wanted(true) => {}
+                HostFileEntry::Entry(entry) => {
+                    files.insert(name.clone(), entry.spec());
+                }
+            }
+        }
+
         Effective {
             shell,
             enabled_plugins,
@@ -361,6 +435,7 @@ impl Config {
             user,
             identity,
             container_runtime,
+            files,
         }
     }
 }
@@ -381,6 +456,51 @@ mod tests {
     use super::*;
 
     /// 013 C-L1: declarations parse, round-trip, and are omitted when empty.
+    /// 010 C-F1/C-F3: both forms parse; a host's entries merge over the global
+    /// set by name and `false` drops one.
+    #[test]
+    fn files_merge_by_name() {
+        let cfg: Config = toml::from_str(
+            r#"
+[files]
+".gitconfig" = "~/.gitconfig"
+".config/nvim" = "~/.config/nvim"
+".myrc" = { source = "~/.myrc", env = "MY_RC" }
+
+[hosts.web.files]
+".gitconfig" = "~/work/gitconfig"
+".config/nvim" = false
+".netrc" = { source = "~/.netrc", secret = true }
+"#,
+        )
+        .unwrap();
+        let spec = |source: &str| FileSpec {
+            source: source.into(),
+            ..FileSpec::default()
+        };
+        let global = cfg.resolve("other", &CliOverrides::default()).files;
+        assert_eq!(global.len(), 3);
+        assert_eq!(global[".gitconfig"], spec("~/.gitconfig"));
+        assert_eq!(global[".myrc"].env.as_deref(), Some("MY_RC"));
+
+        let web = cfg.resolve("web", &CliOverrides::default()).files;
+        assert_eq!(
+            web.keys().collect::<Vec<_>>(),
+            [".gitconfig", ".myrc", ".netrc"]
+        );
+        assert_eq!(web[".gitconfig"], spec("~/work/gitconfig"));
+        assert!(web[".netrc"].secret);
+
+        // The file round-trips, short forms staying short.
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("\".gitconfig\" = \"~/.gitconfig\""), "{text}");
+        assert!(text.contains("\".config/nvim\" = false"), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
+        // No files: nothing about them is written.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("files"), "{text}");
+    }
+
     #[test]
     fn plugins_and_shells_are_declared_with_sources() {
         let c: Config = toml::from_str(

@@ -6,7 +6,6 @@
 //! config, ssh_config, plugins and shells, and the container runtime is a
 //! stand-in script on `PATH`. A shell that is not installed skips its part.
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -37,8 +36,7 @@ impl Client {
     /// Put an executable script on the client's `PATH`.
     fn script(&self, name: &str, body: &str) {
         let path = self.root.join("bin").join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, body);
     }
 
     /// `program` with only the client's environment: `PATH` holds `xxh` and the
@@ -79,6 +77,25 @@ impl Drop for Client {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// Write an executable script through a child `sh`. This process never holds a
+/// write descriptor to it, so a concurrent `fork` in another test cannot make
+/// the kernel refuse to run it ("text file busy").
+fn write_script(path: &std::path::Path, body: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh");
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin
+        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .expect("write script");
+    drop(stdin);
+    assert!(child.wait().expect("sh").success());
 }
 
 fn output(cmd: &mut Command) -> (Option<i32>, String, String) {
