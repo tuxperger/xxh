@@ -138,9 +138,132 @@ pub fn parse(text: &str, alias: &str, home: &std::path::Path) -> HostExtras {
     out
 }
 
+/// `Include` nesting followed when listing aliases; OpenSSH itself stops at 16.
+const INCLUDE_DEPTH: usize = 4;
+
+/// The host aliases of the user's `~/.ssh/config`, for completion (007 C-K7).
+pub fn user_host_aliases() -> Vec<String> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    host_aliases(&home.join(".ssh").join("config"), &home)
+}
+
+/// Every concrete `Host` alias in `config` and the files it includes, sorted
+/// and without repeats (007 T006, C-K7). Patterns (`*`, `?`, `!`) name no host
+/// and are left out; an unreadable file contributes nothing. Unlike [`parse`]
+/// this follows `Include`: aliases usually live in `config.d/*`.
+pub fn host_aliases(config: &std::path::Path, home: &std::path::Path) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let base = config.parent().unwrap_or(std::path::Path::new("."));
+    collect_aliases(config, base, home, INCLUDE_DEPTH, &mut out);
+    out.into_iter().collect()
+}
+
+fn collect_aliases(
+    file: &std::path::Path,
+    base: &std::path::Path,
+    home: &std::path::Path,
+    depth: usize,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return;
+    };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(|c: char| c.is_whitespace() || c == '=') else {
+            continue;
+        };
+        let words = value
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
+            .split_whitespace()
+            .map(|w| w.trim_matches('"'))
+            .filter(|w| !w.is_empty());
+        match key.to_ascii_lowercase().as_str() {
+            "host" => out.extend(
+                words
+                    .filter(|w| !w.contains(['*', '?', '!']))
+                    .map(str::to_string),
+            ),
+            "include" if depth > 0 => {
+                for word in words {
+                    for path in included_files(word, base, home) {
+                        collect_aliases(&path, base, home, depth - 1, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The files one `Include` word names: `~/` is the home directory, a relative
+/// path is taken from the config's directory, and the file name may be a glob.
+fn included_files(word: &str, base: &std::path::Path, home: &std::path::Path) -> Vec<PathBuf> {
+    let path = match word.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if std::path::Path::new(word).is_absolute() => PathBuf::from(word),
+        None => base.join(word),
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !name.contains(['*', '?']) {
+        return vec![path];
+    }
+    let Some(Ok(entries)) = path.parent().map(std::fs::read_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| glob(&name, &e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect();
+    files.sort();
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Aliases come from the config and its includes; patterns never do (007 T006).
+    #[test]
+    fn aliases_skip_patterns_and_follow_includes() {
+        let home = std::env::temp_dir().join(format!(
+            "xxh-aliases-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let ssh = home.join(".ssh");
+        std::fs::create_dir_all(ssh.join("config.d")).unwrap();
+        std::fs::write(
+            ssh.join("config"),
+            "Include config.d/*.conf ~/extra missing\n\
+             Host web db-1 \"quoted\"\n  User deploy\n\
+             Host *.internal !secret jump-?\n\
+             Host=eq\nHost *\n  ForwardAgent no\n",
+        )
+        .unwrap();
+        std::fs::write(ssh.join("config.d/a.conf"), "Host inc-a\nHost web\n").unwrap();
+        std::fs::write(ssh.join("config.d/b.txt"), "Host not-matched\n").unwrap();
+        std::fs::write(home.join("extra"), "host lower-key\n").unwrap();
+
+        assert_eq!(
+            host_aliases(&ssh.join("config"), &home),
+            ["db-1", "eq", "inc-a", "lower-key", "quoted", "web"]
+        );
+        // No file at all: nothing to offer, no error.
+        assert!(host_aliases(&home.join("nope"), &home).is_empty());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     const CONFIG: &str = "\
 IdentitiesOnly no

@@ -95,6 +95,9 @@ xxh plugin add <git-url | path | nixpkgs:attr | flake:ref#attr> [--name NAME]
 xxh plugin enable|disable|update|remove <name>
 xxh plugin list [--enabled]
 xxh sync                       # install the declared plugins/shells at the locked versions
+
+xxh completions bash|zsh|fish  # completion script for your shell
+xxh man [--dir <DIR>]          # xxh(1), or the pages of every subcommand
 ```
 
 ### Container targets
@@ -245,6 +248,33 @@ something could not be removed, and says what.
 Exit codes are distinguishable by error class: `10` transport, `20` shell,
 `30` plugin, `40` config, `50` target (`clean` refused or incomplete); `xxh doctor`
 exits `1` when a check fails.
+
+### Completion and man pages
+
+One line in the rc file of your own shell:
+
+```sh
+eval "$(xxh completions bash)"      # ~/.bashrc
+source <(xxh completions zsh)       # ~/.zshrc, after compinit
+xxh completions fish | source       # ~/.config/fish/config.fish
+```
+
+Tab then completes subcommands, flags and their values, and what you would
+otherwise type by hand: hosts from `~/.ssh/config` (with its `Include`s) and
+`[hosts.*]` of the xxh config, running containers after `docker:` / `podman:` /
+`container:`, and plugin and shell names that fit the command (`plugin enable`
+offers what is installed but not enabled). The script is a thin stub that asks
+`xxh` itself, so it never goes stale. Completion opens no connection, runs
+nothing on a target, and gives up silently on a slow or remote container
+runtime rather than hold the prompt.
+
+```sh
+xxh man | man -l -                        # read xxh(1) now
+xxh man --dir ~/.local/share/man/man1     # install xxh.1, xxh-plugin-add.1, …
+```
+
+`xxh(1)` also lists the exit codes and file locations. The Nix package installs
+the completions and the man pages itself.
 
 ## Platform matrix
 

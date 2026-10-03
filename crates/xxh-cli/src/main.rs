@@ -6,13 +6,15 @@
 //! (T005/T043, §FR-026, contracts/cli-commands.md).
 
 mod commands;
+mod complete;
 mod target;
 
 use std::process::ExitCode;
 
 use tokio::runtime::Runtime;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
+use clap_complete::engine::ArgValueCompleter;
 use commands::config::ConfigAction;
 use commands::plugin::{PluginAction, PluginCmdError};
 use target::{CliTargetFlags, ParsedTarget};
@@ -57,10 +59,11 @@ struct Cli {
     /// Target to connect to when no subcommand is given: an SSH `[user@]host`
     /// (compatible with ~/.ssh/config), or a container `docker:<ref>` /
     /// `podman:<ref>` / `container:<ref>`.
+    #[arg(add = ArgValueCompleter::new(complete::targets))]
     host: Option<String>,
 
     /// Shell to use for this session (overrides config).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, add = ArgValueCompleter::new(complete::shells))]
     shell: Option<String>,
 
     /// Login user on the remote host (overrides `user@host` and config).
@@ -68,7 +71,13 @@ struct Cli {
     user: Option<String>,
 
     /// Private key (identity file) for authentication, used exclusively.
-    #[arg(short = 'i', long, global = true, value_name = "PATH")]
+    #[arg(
+        short = 'i',
+        long,
+        global = true,
+        value_name = "PATH",
+        value_hint = clap::ValueHint::FilePath
+    )]
     identity: Option<std::path::PathBuf>,
 
     /// Keep the environment on the host between sessions.
@@ -146,6 +155,7 @@ enum Command {
     /// Show what xxh left on a target: kept environment, sessions, components.
     Status {
         /// Target, as for a login.
+        #[arg(add = ArgValueCompleter::new(complete::targets))]
         target: String,
         /// Print one JSON object instead of text.
         #[arg(long)]
@@ -155,14 +165,33 @@ enum Command {
     /// machine and, given a target, of the target.
     Doctor {
         /// Target to diagnose as well, as for a login.
+        #[arg(add = ArgValueCompleter::new(complete::targets))]
         target: Option<String>,
         /// Print one JSON object instead of text.
         #[arg(long)]
         json: bool,
     },
+    /// Print the completion script for a shell.
+    ///
+    /// Load it from the shell's rc file: `eval "$(xxh completions bash)"`,
+    /// `source <(xxh completions zsh)` (after compinit) or
+    /// `xxh completions fish | source`.
+    Completions {
+        // Not `shell`: that id belongs to the global `--shell`.
+        #[arg(value_name = "SHELL")]
+        for_shell: commands::completions::CompletionShell,
+    },
+    /// Print the xxh(1) manual page, or write all pages into a directory.
+    Man {
+        /// Write `xxh.1`, `xxh-<subcommand>.1`, … into this directory instead of
+        /// printing xxh(1).
+        #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+        dir: Option<std::path::PathBuf>,
+    },
     /// Remove what xxh left on a target.
     Clean {
         /// Target, as for a login.
+        #[arg(add = ArgValueCompleter::new(complete::targets))]
         target: String,
         /// Remove even while a session on the target is still running.
         #[arg(long)]
@@ -260,6 +289,12 @@ fn session_exit_code(code: i32, exec: bool) -> u8 {
 }
 
 fn main() -> ExitCode {
+    // Completion answers the user's prompt: no parsing errors, no logging (007 C-K5).
+    let mut argv = std::env::args_os().skip(1);
+    if argv.next().is_some_and(|a| a == "__complete") {
+        complete::run(&argv.collect::<Vec<_>>(), Cli::command);
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     xxh_core::init_observability(verbosity(&cli));
 
@@ -304,6 +339,11 @@ fn run(cli: &Cli, exec: Option<ExecRequest>) -> u8 {
             }
         }
         Some(Command::Sync) => run_sync(),
+        Some(Command::Completions { for_shell }) => {
+            print!("{}", commands::completions::script(*for_shell));
+            exit::OK
+        }
+        Some(Command::Man { dir }) => run_man(dir.as_deref()),
         Some(Command::Status { target, json }) => run_status(target, *json, cli),
         Some(Command::Doctor { target, json }) => run_doctor(target.as_deref(), *json, cli),
         Some(Command::Clean {
@@ -344,6 +384,27 @@ fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Ru
         resolve_target(&cfg, cli, parsed).map_err(|e| report("config", &e, exit::CONFIG))?;
     let rt = Runtime::new().map_err(|e| report("transport", &e, exit::TRANSPORT))?;
     Ok((eff, resolved, rt))
+}
+
+/// `xxh man` (007 C-K13..C-K16): xxh(1) to stdout, or every page into `dir`.
+fn run_man(dir: Option<&std::path::Path>) -> u8 {
+    use std::io::Write as _;
+
+    match dir {
+        None => {
+            let pages = commands::man::pages(Cli::command());
+            // A closed pager is not an error.
+            let _ = std::io::stdout().write_all(&pages[0].1);
+            exit::OK
+        }
+        Some(dir) => match commands::man::write_to(Cli::command(), dir) {
+            Ok(count) => {
+                println!("wrote {count} manual pages to {}", dir.display());
+                exit::OK
+            }
+            Err(e) => report("man", &e, exit::USAGE),
+        },
+    }
 }
 
 /// `xxh sync` (013 C-L9): 0 when every declaration is in place, 30 (plugin
@@ -680,6 +741,29 @@ mod tests {
             request(&["xxh", "-c", "x", "status", "web"], false).is_err(),
             "with a subcommand"
         );
+    }
+
+    /// `completions` takes one of the supported shells; `man` an optional
+    /// directory (007 T004/T012, C-K2).
+    #[test]
+    fn completions_and_man_parse() {
+        use commands::completions::CompletionShell;
+        let cli = Cli::try_parse_from(["xxh", "completions", "zsh"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Completions {
+                for_shell: CompletionShell::Zsh
+            })
+        ));
+        let err = Cli::try_parse_from(["xxh", "completions", "tcsh"])
+            .err()
+            .expect("an unsupported shell is refused");
+        assert_eq!(err.exit_code(), 2);
+        let text = err.to_string();
+        assert!(text.contains("bash, zsh, fish"), "{text}");
+        assert!(Cli::try_parse_from(["xxh", "completions"]).is_err());
+        let cli = Cli::try_parse_from(["xxh", "man", "--dir", "/tmp/m"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Man { dir: Some(_) })));
     }
 
     /// `doctor` works with and without a target (006 T009).

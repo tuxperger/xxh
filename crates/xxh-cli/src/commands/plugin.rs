@@ -5,7 +5,10 @@
 //! also assembles the enabled plugins for a session in resolved order (T039).
 
 use clap::Subcommand;
+use clap_complete::engine::ArgValueCompleter;
 use xxh_config::{Config, ConfigError, Effective};
+
+use crate::complete;
 use xxh_core::session::SessionPlugin;
 use xxh_plugins::registry::Registry;
 use xxh_plugins::source::SourceSpec;
@@ -23,13 +26,25 @@ pub enum PluginAction {
         name: Option<String>,
     },
     /// Remove an installed plugin (and disable it).
-    Remove { name: String },
+    Remove {
+        #[arg(add = ArgValueCompleter::new(complete::installed_plugins))]
+        name: String,
+    },
     /// Enable an installed plugin in the config.
-    Enable { name: String },
+    Enable {
+        #[arg(add = ArgValueCompleter::new(complete::disabled_plugins))]
+        name: String,
+    },
     /// Disable a plugin in the config (keeps it installed).
-    Disable { name: String },
+    Disable {
+        #[arg(add = ArgValueCompleter::new(complete::enabled_plugins))]
+        name: String,
+    },
     /// Re-fetch a plugin from its recorded source.
-    Update { name: String },
+    Update {
+        #[arg(add = ArgValueCompleter::new(complete::installed_plugins))]
+        name: String,
+    },
     /// List installed plugins.
     List {
         /// Show only enabled plugins.

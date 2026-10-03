@@ -487,3 +487,147 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
         if cand.is_file() { Some(cand) } else { None }
     })
 }
+
+/// Whether a runtime endpoint variable (`DOCKER_HOST`, `CONTAINER_HOST`) keeps
+/// the runtime CLI on this machine: unset, empty or a unix socket (007 C-K9).
+fn is_local_endpoint(value: Option<&str>) -> bool {
+    value.is_none_or(|v| v.is_empty() || v.starts_with("unix://"))
+}
+
+/// The names of the running containers of `rt`, for completion (007 T007,
+/// C-K8/C-K9). Read-only (`ps`), bounded by `budget`, and silent: a missing or
+/// hung runtime, an error, or a runtime pointed at another machine all give an
+/// empty list — completion must neither wait nor reach the network.
+pub fn running_containers(rt: ContainerRuntime, budget: Duration) -> Vec<String> {
+    let endpoint = match rt {
+        ContainerRuntime::Docker => "DOCKER_HOST",
+        ContainerRuntime::Podman => "CONTAINER_HOST",
+    };
+    if !is_local_endpoint(std::env::var(endpoint).ok().as_deref()) {
+        return Vec::new();
+    }
+    match which(rt.binary_name()) {
+        Some(bin) => list_running(&bin, budget),
+        None => Vec::new(),
+    }
+}
+
+/// [`running_containers`] of the first installed runtime in
+/// [`ContainerRuntime::AUTO_ORDER`] — what a `container:` target would use.
+pub fn running_containers_auto(budget: Duration) -> Vec<String> {
+    ContainerRuntime::AUTO_ORDER
+        .into_iter()
+        .find(|rt| which(rt.binary_name()).is_some())
+        .map(|rt| running_containers(rt, budget))
+        .unwrap_or_default()
+}
+
+fn list_running(bin: &std::path::Path, budget: Duration) -> Vec<String> {
+    use std::io::Read as _;
+
+    let Ok(mut child) = std::process::Command::new(bin)
+        .args(["ps", "--format", "{{.Names}}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        return Vec::new();
+    };
+    // The reader runs aside so the wait below is bounded whatever the runtime does.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        let _ = tx.send(text);
+    });
+    let text = rx.recv_timeout(budget);
+    if text.is_err() {
+        let _ = child.kill();
+    }
+    let ok = child.wait().is_ok_and(|s| s.success());
+    match text {
+        Ok(text) if ok => {
+            let mut names: Vec<String> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+            names.sort();
+            names
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// A stand-in runtime CLI: a script in its own temp dir.
+    fn fake_runtime(tag: &str, body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "xxh-fake-rt-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("runtime");
+        std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    fn remove(bin: &std::path::Path) {
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
+    /// Names come back sorted; a failing runtime offers nothing (007 T007).
+    #[test]
+    fn running_containers_are_listed() {
+        let bin = fake_runtime(
+            "ok",
+            "[ \"$1 $2 $3\" = 'ps --format {{.Names}}' ] || exit 2\necho web\necho app",
+        );
+        assert_eq!(list_running(&bin, Duration::from_secs(5)), ["app", "web"]);
+        remove(&bin);
+
+        let bin = fake_runtime("fail", "echo half; echo 'daemon down' >&2; exit 1");
+        assert!(list_running(&bin, Duration::from_secs(5)).is_empty());
+        remove(&bin);
+
+        assert!(
+            list_running(
+                std::path::Path::new("/nonexistent/rt"),
+                Duration::from_secs(1)
+            )
+            .is_empty()
+        );
+    }
+
+    /// A hung runtime costs the budget, not its own time (007 C-K9, SC-003).
+    #[test]
+    fn hung_runtime_is_cut_off() {
+        let bin = fake_runtime("hung", "exec sleep 30");
+        let started = std::time::Instant::now();
+        assert!(list_running(&bin, Duration::from_millis(100)).is_empty());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        remove(&bin);
+    }
+
+    #[test]
+    fn only_local_endpoints_are_asked() {
+        assert!(is_local_endpoint(None));
+        assert!(is_local_endpoint(Some("")));
+        assert!(is_local_endpoint(Some("unix:///run/user/1000/docker.sock")));
+        assert!(!is_local_endpoint(Some("tcp://10.0.0.5:2376")));
+        assert!(!is_local_endpoint(Some("ssh://me@build")));
+    }
+}
