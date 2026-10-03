@@ -13,7 +13,9 @@ mod russh_backend;
 mod ssh_cli_backend;
 pub mod ssh_config_extra;
 mod tty;
-pub use container_backend::{ContainerCliTransport, resolve_runtime};
+pub use container_backend::{
+    ContainerCliTransport, resolve_runtime, running_containers, running_containers_auto,
+};
 pub use russh_backend::RusshTransport;
 pub use ssh_cli_backend::SshCliTransport;
 
