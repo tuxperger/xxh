@@ -12,12 +12,12 @@
 
 ## Phase 1: Foundational
 
-- [ ] T001 `crates/xxh-config/src/lib.rs`: `FileEntry` (строка либо таблица
+- [X] T001 `crates/xxh-config/src/lib.rs`: `FileEntry` (строка либо таблица
   `source`/`env`/`secret`), `Config.files`, `HostOverride.files` (значение хоста
   также `false`), `Effective.files` со слиянием по имени (C-F1, C-F3); unit-тесты
   разбора, слияния и исключения; регенерация `nix/config-schema.json`;
   `crates/xxh-config/src/template.rs` — пример `[files]` и `[hosts.web.files]`
-- [ ] T002 `crates/xxh-core/src/files.rs`: проверка имён и `env` (C-F2), выбор
+- [X] T002 `crates/xxh-core/src/files.rs`: проверка имён и `env` (C-F2), выбор
   способа видимости (таблица C-F6, XDG, `env`, нет способа), распознавание
   секретов по имени и PEM-заголовку (C-F9), unit-тесты на каждое правило
 
@@ -25,7 +25,7 @@
 
 ## Phase 2: User Story 1 — Свои конфиги на цели (P1) 🎯 MVP
 
-- [ ] T003 [US1] `crates/xxh-core/src/files.rs`: `build(files, home) -> Built {
+- [X] T003 [US1] `crates/xxh-core/src/files.rs`: `build(files, home) -> Built {
   components, warnings, stage }` — копирование в промежуточный каталог с правами,
   симлинки только внутрь объявленного каталога (C-F11), `env.sh` по способу
   видимости, отдельный компонент на запись и общий для `.config/` (C-F4),
@@ -33,7 +33,7 @@
   дерево компонента и `env.sh`, права 0600 сохранены, отсутствующий источник,
   секрет без и с разрешением, секрет внутри каталога, симлинк наружу, порог
   размера, адрес стабилен между сборками и меняется только у изменённой записи
-- [ ] T004 [US1] `crates/xxh-cli/src/commands/connect.rs`: `env_components(eff)`
+- [X] T004 [US1] `crates/xxh-cli/src/commands/connect.rs`: `env_components(eff)`
   включает компоненты файлов и печатает предупреждения (`xxh: warning: files: …`,
   и при тихом режиме); вызовы в `commands/doctor.rs` и `commands/remote_env.rs`
   (план для `status` / `clean --stale`); ошибка объявления — класс config (40)

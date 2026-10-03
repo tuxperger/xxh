@@ -22,16 +22,35 @@ pub fn progress(quiet: bool) -> Progress<'static> {
     }
 }
 
+/// The environment components of a session. The personal files among them are
+/// packed on demand from a staging directory that lives as long as this value.
+pub struct SessionEnv {
+    pub components: Vec<xxh_core::deploy::Component>,
+    _files: xxh_core::files::Built,
+}
+
 /// The session's environment components, as every login builds them: the base
 /// component (session marker + demo alias) and the client's terminfo entry for
 /// $TERM — hosts rarely know modern terminals (ghostty/kitty/…), and a missing
 /// entry breaks line editing. gzip is safe before host capabilities are known.
-pub fn env_components() -> Result<Vec<xxh_core::deploy::Component>, SessionError> {
+/// Then the user's declared files (010): what cannot or must not be delivered is
+/// reported here, before connecting, and left out (C-F7..C-F11).
+pub fn env_components(eff: &Effective) -> Result<SessionEnv, SessionError> {
     let mut env = vec![xxh_core::session::minimal_env_component("gz")?];
     if let Some(ti) = xxh_core::session::terminfo_component("gz") {
         env.push(ti);
     }
-    Ok(env)
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let files = xxh_core::files::build(&eff.files, home.as_deref().unwrap_or(".".as_ref()), "gz")?;
+    // Warnings, not stages: shown even when progress is silent.
+    for warning in &files.warnings {
+        eprintln!("xxh: warning: {warning}");
+    }
+    env.extend(files.components.iter().cloned());
+    Ok(SessionEnv {
+        components: env,
+        _files: files,
+    })
 }
 
 /// Connect to `target` with the effective settings and run the interactive shell —
@@ -45,12 +64,13 @@ pub async fn run(
 ) -> Result<i32, SessionError> {
     let progress = progress(quiet);
     let (transport, target) = open_transport(target, eff, progress).await?;
-    let env = env_components()?;
+    let env = env_components(eff)?;
     // Enabled plugins in resolved load order; resolution failures abort before
     // anything reaches the target (§FR-021).
     let plugins = crate::commands::plugin::session_plugins(eff)?;
 
-    let mut session = Session::establish(transport, &target, eff, &env, &plugins, progress).await?;
+    let mut session =
+        Session::establish(transport, &target, eff, &env.components, &plugins, progress).await?;
     // Notes are warnings, not stages: shown even when progress is silent (006 C-D7).
     for note in session.notes() {
         eprintln!("xxh: note: {note}");

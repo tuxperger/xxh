@@ -124,6 +124,18 @@ fn check(text: &str) -> (Option<String>, Vec<Warning>) {
             }
         }
     }
+    // Declared files, for every host that changes the set (010 C-F2).
+    if let Some(cfg) = validate::parse(text) {
+        let hosts = std::iter::once("").chain(cfg.hosts.keys().map(String::as_str));
+        for host in hosts {
+            let files = cfg.resolve(host, &CliOverrides::default()).files;
+            if let Err(e) = xxh_core::files::check(&files) {
+                if !problems.contains(&e) {
+                    problems.push(e);
+                }
+            }
+        }
+    }
     let error = (!problems.is_empty()).then(|| problems.join("\n"));
     (error, report.warnings)
 }
@@ -356,6 +368,10 @@ pub fn run(action: &ConfigAction, cli: &CliOverrides) -> Result<(), ConfigError>
                     .unwrap_or_else(|| "<ssh-config>".into())
             );
             println!("enabled_plugins   = {:?}", eff.enabled_plugins);
+            // Personal files for this target (010 C-F3).
+            for (name, f) in &eff.files {
+                println!("files.{name} = {}", f.source);
+            }
             // Declared sources (013): what `xxh sync` installs.
             for (name, d) in &cfg.plugins {
                 println!("plugins.{name} = {}", d.source);

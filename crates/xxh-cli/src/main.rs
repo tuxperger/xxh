@@ -382,6 +382,9 @@ fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Ru
     // Resolve effective settings against the right alias, then build the target.
     let (eff, resolved) =
         resolve_target(&cfg, cli, parsed).map_err(|e| report("config", &e, exit::CONFIG))?;
+    // A malformed `[files]` declaration is a config error, caught before any
+    // connection (010 C-F2).
+    xxh_core::files::check(&eff.files).map_err(|e| report("config", &e, exit::CONFIG))?;
     let rt = Runtime::new().map_err(|e| report("transport", &e, exit::TRANSPORT))?;
     Ok((eff, resolved, rt))
 }
