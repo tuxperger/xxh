@@ -11,7 +11,7 @@
 ```
 
 ```sh
-xxh config show --host work          # files..gitconfig = ~/dotfiles/gitconfig-work
+xxh config show --host work          # files.".gitconfig" = ~/dotfiles/gitconfig-work
 xxh web -- git config user.name      # имя из вашего .gitconfig
 xxh web -- sh -c 'echo $XDG_CONFIG_HOME; ls ~/.gitconfig'   # копия в ~/.xxh; своего файла у цели нет
 xxh web --keep -- true               # deliver components: sending N

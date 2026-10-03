@@ -53,10 +53,10 @@
 
 ## Phase 3: User Story 2 — Разные наборы для разных хостов (P2)
 
-- [ ] T007 [US2] `crates/xxh-cli/src/commands/config.rs`: `config show` печатает
+- [X] T007 [US2] `crates/xxh-cli/src/commands/config.rs`: `config show` печатает
   действующий набор файлов (C-F3); дополнить `files_container.rs`: запись хоста
   заменяет глобальную и `false` исключает — в `config show --host` и в сессии
-- [ ] T008 [P] [US2] `nix/modules/common.nix`: опции `files` и `hosts.<имя>.files`
+- [X] T008 [P] [US2] `nix/modules/common.nix`: опции `files` и `hosts.<имя>.files`
   (строка, `{ source, env, secret }`, для хоста также `false`) и их рендер;
   `tests/nix-modules/eval_options.nix`, `tests/nix-modules/roundtrip.nix` (C-F13)
 

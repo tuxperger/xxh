@@ -1,9 +1,10 @@
-//! Integration (010 T006, US1): the **real `xxh` binary** delivers the files
+//! Integration (010 T006/T007, US1+US2): the **real `xxh` binary** delivers the files
 //! declared under `[files]` into a running container over the container
 //! transport. Programs in the session find them through `GIT_CONFIG_GLOBAL`,
 //! `XDG_CONFIG_HOME` and a user-named variable; the container's own files of the
 //! same names stay as they were, nothing is left after the session and the image
-//! is not changed (Принцип I, VIII). Runtime-gated; skips when none is available.
+//! is not changed (Принцип I, VIII). A host section replaces one entry and drops
+//! another — in `config show --host` and in the session (C-F3). Runtime-gated.
 
 mod common;
 
@@ -101,6 +102,57 @@ fn declared_files_reach_a_container_and_leave_nothing_behind() {
         assert!(out.contains(want), "`{want}` missing from:\n{out}");
     }
     assert!(!err.contains("MARK"), "no file contents on stderr: {err}");
+
+    // ── US2: this host replaces one entry and drops another (C-F3, T007) ────
+    write("gitconfig-work", "[user]\n\tname = WORKMARK-host\n", 0o644);
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(&format!(
+        "\n[hosts.{}.files]\n\".gitconfig\" = \"~/src/gitconfig-work\"\n\".config/tool\" = false\n",
+        fx.name
+    ));
+    std::fs::write(&cfg, text).unwrap();
+
+    let (code, out, err) = xxh(&["config", "show", "--host", &fx.name]);
+    assert_eq!(code, Some(0), "stderr: {err}");
+    assert!(
+        out.contains("files.\".gitconfig\" = ~/src/gitconfig-work\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("files.\".myrc\" = ~/src/myrc (env MYTOOL_RC)\n"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("files.\".config/tool\""),
+        "excluded here: {out}"
+    );
+    let (code, out, _) = xxh(&["config", "show"]);
+    assert_eq!(code, Some(0));
+    assert!(
+        out.contains("files.\".gitconfig\" = ~/src/gitconfig\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("files.\".config/tool\" = ~/src/tool\n"),
+        "{out}"
+    );
+
+    let probe = r#"
+        cat "$GIT_CONFIG_GLOBAL" "$MYTOOL_RC"
+        echo "xdg=${XDG_CONFIG_HOME:-unset}"
+    "#;
+    let (code, out, err) = xxh(&[&target, "--", "sh", "-c", probe]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains("WORKMARK-host"),
+        "the host's entry wins: {out}"
+    );
+    assert!(
+        !out.contains("GITMARK"),
+        "the global entry is replaced: {out}"
+    );
+    assert!(out.contains("RCMARK-mine"), "other entries stay: {out}");
+    assert!(out.contains("xdg=unset"), "`false` drops the entry: {out}");
 
     // ── Own files untouched; container clean; image unchanged (C-DT3) ───────
     assert_eq!(fx.exec(own), before, "own files must not change");

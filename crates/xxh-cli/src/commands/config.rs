@@ -370,7 +370,18 @@ pub fn run(action: &ConfigAction, cli: &CliOverrides) -> Result<(), ConfigError>
             println!("enabled_plugins   = {:?}", eff.enabled_plugins);
             // Personal files for this target (010 C-F3).
             for (name, f) in &eff.files {
-                println!("files.{name} = {}", f.source);
+                let mut extra = Vec::new();
+                if let Some(var) = &f.env {
+                    extra.push(format!("env {var}"));
+                }
+                if f.secret {
+                    extra.push("secret".to_string());
+                }
+                if extra.is_empty() {
+                    println!("files.\"{name}\" = {}", f.source);
+                } else {
+                    println!("files.\"{name}\" = {} ({})", f.source, extra.join(", "));
+                }
             }
             // Declared sources (013): what `xxh sync` installs.
             for (name, d) in &cfg.plugins {

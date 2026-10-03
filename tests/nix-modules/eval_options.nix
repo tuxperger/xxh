@@ -34,7 +34,11 @@ let
       user = "www";
       identity = "/keys/web";
       container_runtime = "docker";
+      files.".config/nvim" = false;
+      files.".gitconfig" = "~/dotfiles/gitconfig-work";
     };
+    files.".gitconfig" = "~/dotfiles/gitconfig";
+    files.".myrc" = { source = "~/.myrc"; env = "MYTOOL_RC"; };
   };
   validToml = common.render valid;
 
@@ -69,10 +73,18 @@ let
     enable = true;
     containerRuntime = "containerd"; # not in enum [ "auto" "docker" "podman" ]
   };
+  badFileEnv = mustFail "bad-file-env" {
+    enable = true;
+    files.".myrc" = { source = "~/.myrc"; env = "MY-RC"; }; # not a variable name
+  };
+  badFileGlobalFalse = mustFail "bad-file-global-false" {
+    enable = true;
+    files.".gitconfig" = false; # only a host may drop an entry
+  };
 in
 pkgs.runCommand "xxh-nix-module-eval-options"
   {
-    inherit badCleanup badTimeout badHostField badUser badRuntime;
+    inherit badCleanup badTimeout badHostField badUser badRuntime badFileEnv badFileGlobalFalse;
   }
   ''
     # The valid declaration rendered a canonical config file.
@@ -83,6 +95,9 @@ pkgs.runCommand "xxh-nix-module-eval-options"
     grep -q 'runtime = "podman"' ${validToml}
     grep -q 'user = "deploy"' ${validToml}
     grep -q 'identity = "/keys/id_ed25519"' ${validToml}
-    echo "eval options: valid accepted, invalid rejected ($badCleanup/$badTimeout/$badHostField/$badUser/$badRuntime)"
+    grep -q '".gitconfig" = "~/dotfiles/gitconfig"' ${validToml}
+    grep -q 'env = "MYTOOL_RC"' ${validToml}
+    grep -q '".config/nvim" = false' ${validToml}
+    echo "eval options: valid accepted, invalid rejected ($badCleanup/$badTimeout/$badHostField/$badUser/$badRuntime/$badFileEnv/$badFileGlobalFalse)"
     touch $out
   ''

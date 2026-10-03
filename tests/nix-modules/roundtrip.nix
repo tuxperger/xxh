@@ -26,6 +26,12 @@ let
           hosts.web.connect_timeout_s = 5;
           hosts.web.user = "www";
           hosts.web.container_runtime = "docker";
+          files.".gitconfig" = "~/dotfiles/gitconfig";
+          files.".config/nvim" = "~/.config/nvim";
+          files.".myrc" = { source = "~/.myrc"; env = "MYTOOL_RC"; };
+          files.".pgpass" = { source = "~/.pgpass"; env = "PGPASSFILE"; secret = true; };
+          hosts.web.files.".gitconfig" = "~/dotfiles/gitconfig-work";
+          hosts.web.files.".config/nvim" = false;
           plugins.alpha.source = "https://example.org/alpha.git#v1";
           plugins.beta.source = "nixpkgs:htop";
           shells.zsh.source = "/srv/xxh-shell-zsh";
@@ -69,6 +75,16 @@ pkgs.runCommand "xxh-nix-module-roundtrip" { nativeBuildInputs = [ xxh ]; } ''
   grep -q 'plugins.alpha = https://example.org/alpha.git#v1' declared.out
   grep -q 'plugins.beta = nixpkgs:htop' declared.out
   grep -q 'shells.zsh = /srv/xxh-shell-zsh' declared.out
+
+  # 010: personal files; the host replaces one entry and drops another (C-F13).
+  xxh config validate
+  grep -q 'files.".gitconfig" = ~/dotfiles/gitconfig$' declared.out
+  grep -q 'files.".config/nvim" = ~/.config/nvim$' declared.out
+  grep -q 'files.".myrc" = ~/.myrc (env MYTOOL_RC)$' declared.out
+  grep -q 'files.".pgpass" = ~/.pgpass (env PGPASSFILE, secret)$' declared.out
+  grep -q 'files.".gitconfig" = ~/dotfiles/gitconfig-work$' web.out
+  grep -q 'files.".myrc" = ~/.myrc (env MYTOOL_RC)$' web.out
+  if grep -q 'files.".config/nvim"' web.out; then exit 1; fi
 
   echo "round-trip: module -> config.toml -> xxh-config parser OK"
   touch $out

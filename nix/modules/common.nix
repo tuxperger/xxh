@@ -16,6 +16,30 @@ let
   transportType = types.enum [ "russh" "ssh" ];
   runtimeType = types.enum [ "auto" "docker" "podman" ];
 
+  # A personal file (010 C-F1): the client path, or the path with the variable
+  # that gets the delivered copy and the permission to send a secret.
+  fileSpec = types.submodule {
+    options = {
+      source = mkOption {
+        type = types.str;
+        description = "Path on the client; `~/` is the client's home directory.";
+      };
+      env = mkOption {
+        type = types.nullOr (types.strMatching "[A-Za-z_][A-Za-z0-9_]*");
+        default = null;
+        description = "Variable that gets the delivered path, for a program without a known one.";
+      };
+      secret = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Deliver it even though it looks like a secret.";
+      };
+    };
+  };
+  fileEntry = types.either types.str fileSpec;
+  # On a host, `false` drops a global entry (010 C-F3).
+  hostFileEntry = types.oneOf [ (types.enum [ false ]) types.str fileSpec ];
+
   # Per-host overrides: every field optional; null means "inherit global"
   # (mirrors HostOverride; list-valued fields replace, not merge).
   hostOverride = types.submodule {
@@ -59,6 +83,11 @@ let
         type = types.nullOr runtimeType;
         default = null;
         description = "Container runtime for this target (container: targets only).";
+      };
+      files = mkOption {
+        type = types.nullOr (types.attrsOf hostFileEntry);
+        default = null;
+        description = "Personal files for this host, merged over the global set by name; `false` drops an entry.";
       };
     };
   };
@@ -128,6 +157,18 @@ rec {
       description = "Private key (identity file) path for all hosts (config: identity).";
     };
 
+    # 010: personal files, by the name a program looks for in the home directory.
+    files = mkOption {
+      type = types.attrsOf fileEntry;
+      default = { };
+      example = {
+        ".gitconfig" = "~/.gitconfig";
+        ".config/nvim" = "~/.config/nvim";
+        ".myrc" = { source = "~/.myrc"; env = "MYTOOL_RC"; };
+      };
+      description = "Personal files made visible in the session (config: [files]).";
+    };
+
     hosts = mkOption {
       type = types.attrsOf hostOverride;
       default = { };
@@ -173,6 +214,20 @@ rec {
     cfg:
     let
       dropNulls = attrs: lib.filterAttrs (_: v: v != null) attrs;
+      # A file entry as TOML has it: a bare path, or a table without defaults.
+      renderFile =
+        v:
+        if builtins.isAttrs v then
+          { inherit (v) source; }
+          // lib.optionalAttrs (v.env != null) { inherit (v) env; }
+          // lib.optionalAttrs v.secret { secret = true; }
+        else
+          v;
+      renderHost =
+        ho:
+        dropNulls (
+          ho // lib.optionalAttrs (ho.files != null) { files = lib.mapAttrs (_: renderFile) ho.files; }
+        );
       settings = {
         default_shell = cfg.defaultShell;
         enabled_plugins = cfg.enabledPlugins;
@@ -185,7 +240,9 @@ rec {
       } // lib.optionalAttrs (cfg.identity != null) {
         identity = cfg.identity;
       } // lib.optionalAttrs (cfg.hosts != { }) {
-        hosts = lib.mapAttrs (_: ho: dropNulls ho) cfg.hosts;
+        hosts = lib.mapAttrs (_: renderHost) cfg.hosts;
+      } // lib.optionalAttrs (cfg.files != { }) {
+        files = lib.mapAttrs (_: renderFile) cfg.files;
       } // lib.optionalAttrs (cfg.plugins != { }) {
         plugins = lib.mapAttrs (_: p: { inherit (p) source; }) cfg.plugins;
       } // lib.optionalAttrs (cfg.shells != { }) {
