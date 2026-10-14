@@ -637,3 +637,151 @@ impl Drop for Hidden {
             .output();
     }
 }
+
+/// The kubeconfig context the Kubernetes scenarios run against
+/// (`XXH_TEST_KUBE_CONTEXT`, else the current context) — 016 T008.
+pub fn kube_context() -> Option<String> {
+    if let Ok(ctx) = std::env::var("XXH_TEST_KUBE_CONTEXT") {
+        return Some(ctx);
+    }
+    let out = Command::new("kubectl")
+        .args(["config", "current-context"])
+        .output()
+        .ok()?;
+    let ctx = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !ctx.is_empty()).then_some(ctx)
+}
+
+/// Whether `ctx` names a reachable cluster (a missing cluster skips, C-DT8).
+pub fn kube_available(ctx: &str) -> bool {
+    Command::new("kubectl")
+        .args([
+            "--context",
+            ctx,
+            "get",
+            "--raw",
+            "/readyz",
+            "--request-timeout=5s",
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A throwaway namespace with one two-container alpine pod (`app`, `side`;
+/// `side` is the annotated default container). The namespace — and with it the
+/// pod — is deleted in `Drop`, panics included (016 T008).
+pub struct KubeFixture {
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+}
+
+impl KubeFixture {
+    pub fn boot(context: &str) -> KubeFixture {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fx = KubeFixture {
+            context: context.to_string(),
+            namespace: format!("xxh-it-{}-{:x}", std::process::id(), nanos & 0xffff_ffff),
+            pod: "target".into(),
+        };
+        fx.kubectl_ok(&["create", "namespace", &fx.namespace]);
+        let manifest = format!(
+            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: {pod}\n  namespace: {ns}\n  \
+             annotations:\n    kubectl.kubernetes.io/default-container: side\nspec:\n  \
+             terminationGracePeriodSeconds: 0\n  containers:\n  \
+             - {{name: app, image: \"{img}\", command: [sleep, infinity]}}\n  \
+             - {{name: side, image: \"{img}\", command: [sleep, infinity]}}\n",
+            pod = fx.pod,
+            ns = fx.namespace,
+            img = container_base_image(),
+        );
+        let (code, _, err) = run_with_stdin(fx.kubectl(&["apply", "-f", "-"]), manifest.as_bytes());
+        assert_eq!(
+            code,
+            Some(0),
+            "kubectl apply: {}",
+            String::from_utf8_lossy(&err)
+        );
+        fx.kubectl_ok(&[
+            "wait",
+            "--for=condition=Ready",
+            &format!("pod/{}", fx.pod),
+            "--timeout=180s",
+        ]);
+        fx
+    }
+
+    /// `kubectl --context C -n NS …`
+    pub fn kubectl(&self, args: &[&str]) -> Command {
+        let mut c = Command::new("kubectl");
+        c.args(["--context", &self.context, "-n", &self.namespace])
+            .args(args);
+        c
+    }
+
+    pub fn kubectl_ok(&self, args: &[&str]) -> String {
+        let out = self.kubectl(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "kubectl {args:?} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// The `k8s:` address of the pod, optionally of one container.
+    pub fn address(&self, container: Option<&str>) -> String {
+        match container {
+            Some(c) => format!("k8s:{}/{}:{c}", self.namespace, self.pod),
+            None => format!("k8s:{}/{}", self.namespace, self.pod),
+        }
+    }
+
+    /// Cleanliness probe of one container (Принцип VIII), out-of-band.
+    pub fn cleanliness(&self, container: &str) -> String {
+        self.kubectl_ok(&[
+            "exec",
+            &self.pod,
+            "-c",
+            container,
+            "--",
+            "sh",
+            "-c",
+            "test -e \"$HOME/.xxh\" && echo DIRTY || echo CLEAN",
+        ])
+        .trim()
+        .to_string()
+    }
+
+    /// The pod's spec generation and container restart counts: a session must
+    /// neither change the spec nor restart a container (FR-004).
+    pub fn spec_state(&self) -> String {
+        self.kubectl_ok(&[
+            "get",
+            "pod",
+            &self.pod,
+            "-o",
+            "jsonpath={.metadata.generation}|{.spec.containers[*].image}|\
+             {.status.containerStatuses[*].restartCount}",
+        ])
+    }
+}
+
+impl Drop for KubeFixture {
+    fn drop(&mut self) {
+        let _ = Command::new("kubectl")
+            .args([
+                "--context",
+                &self.context,
+                "delete",
+                "namespace",
+                &self.namespace,
+                "--wait=false",
+            ])
+            .output();
+    }
+}

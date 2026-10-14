@@ -22,9 +22,10 @@ use xxh_transport::ContainerRuntime;
 const RUNTIME_BUDGET: Duration = Duration::from_millis(150);
 
 /// Target schemes offered before anything is typed, with what they select.
-const SCHEMES: [(&str, &str); 4] = [
+const SCHEMES: [(&str, &str); 5] = [
     ("container:", "running container (docker or podman)"),
     ("docker:", "running docker container"),
+    ("k8s:", "Kubernetes pod: [namespace/]pod[:container]"),
     ("podman:", "running podman container"),
     ("ssh:", "SSH host"),
 ];
@@ -157,6 +158,11 @@ fn target_candidates(
                 .filter(|name| name.starts_with(rest))
                 .map(|name| Candidate::plain(format!("{scheme}:{name}")))
                 .collect();
+        }
+        // Pod names would need the cluster API; completion never goes to the
+        // network (016 C-K8S2, 007 C-K9).
+        if scheme == "k8s" {
+            return Vec::new();
         }
     }
     // `ssh:` and `user@` are kept as typed; the host after them is completed.
@@ -405,10 +411,14 @@ mod tests {
                 "web-ssh",
                 "container:",
                 "docker:",
+                "k8s:",
                 "podman:",
                 "ssh:"
             ]
         );
+        assert_eq!(target("k"), ["k8s:"]);
+        assert!(target("k8s:").is_empty());
+        assert!(target("k8s:web").is_empty());
         assert_eq!(target("w"), ["web", "web-ssh"]);
         assert_eq!(target("d"), ["db", "docker:"]);
         // The typed prefix is kept.

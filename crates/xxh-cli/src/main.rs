@@ -21,7 +21,7 @@ use target::{CliTargetFlags, ParsedTarget};
 use xxh_config::{CleanupMode, CliOverrides, Effective, RuntimeSetting, TransportBackend};
 use xxh_core::Verbosity;
 use xxh_core::session::{ExecCommand, SessionError};
-use xxh_transport::{ContainerTarget, ResolvedSshTarget, ResolvedTarget};
+use xxh_transport::{ContainerTarget, KubeTarget, ResolvedSshTarget, ResolvedTarget};
 
 /// Exit-code taxonomy so error classes are distinguishable (§FR-026).
 mod exit {
@@ -57,8 +57,9 @@ fn report(class: &str, err: &dyn std::fmt::Display, code: u8) -> u8 {
 #[command(name = "xxh", version, about = "Portable shell environment over SSH")]
 struct Cli {
     /// Target to connect to when no subcommand is given: an SSH `[user@]host`
-    /// (compatible with ~/.ssh/config), or a container `docker:<ref>` /
-    /// `podman:<ref>` / `container:<ref>`.
+    /// (compatible with ~/.ssh/config), a container `docker:<ref>` /
+    /// `podman:<ref>` / `container:<ref>`, or a Kubernetes pod
+    /// `k8s:[namespace/]pod[:container]`.
     #[arg(add = ArgValueCompleter::new(complete::targets))]
     host: Option<String>,
 
@@ -96,6 +97,10 @@ struct Cli {
     /// Container runtime for `container:` targets (container targets only).
     #[arg(long, global = true, value_parser = ["auto", "docker", "podman"])]
     runtime: Option<String>,
+
+    /// kubeconfig context for `k8s:` targets (default: the current context).
+    #[arg(long, global = true, value_name = "NAME")]
+    kube_context: Option<String>,
 
     /// Set a variable in the session or command: `NAME=VALUE`, or `NAME` to pass
     /// on its value from here. Repeatable; beats the config. Values are never
@@ -217,6 +222,18 @@ fn verbosity(cli: &Cli) -> Verbosity {
             1 => Verbosity::Verbose,
             _ => Verbosity::VeryVerbose,
         }
+    }
+}
+
+/// Which family-specific flags were given, for `target::validate_flags` (C-A5).
+fn target_flags(cli: &Cli) -> CliTargetFlags {
+    CliTargetFlags {
+        identity_set: cli.identity.is_some(),
+        forward_agent_set: cli.forward_agent,
+        transport_set: cli.transport.is_some(),
+        runtime_set: cli.runtime.is_some(),
+        user_set: cli.user.is_some(),
+        kube_context_set: cli.kube_context.is_some(),
     }
 }
 
@@ -415,13 +432,8 @@ fn prepare(raw_target: &str, cli: &Cli) -> Result<(Effective, ResolvedTarget, Ru
     // Parse the target family first (pure grammar), then reject flags that do not
     // apply to that family before touching the network (C-A2/C-A5).
     let parsed = target::parse(raw_target).map_err(|e| report("config", &e, exit::CONFIG))?;
-    let flags = CliTargetFlags {
-        identity_set: cli.identity.is_some(),
-        forward_agent_set: cli.forward_agent,
-        transport_set: cli.transport.is_some(),
-        runtime_set: cli.runtime.is_some(),
-    };
-    target::validate_flags(&parsed, &flags).map_err(|e| report("config", &e, exit::CONFIG))?;
+    target::validate_flags(&parsed, &target_flags(cli))
+        .map_err(|e| report("config", &e, exit::CONFIG))?;
 
     // Resolve effective settings against the right alias, then build the target.
     let (eff, resolved) =
@@ -564,13 +576,7 @@ fn run_doctor(raw_target: Option<&str>, json: bool, cli: &Cli) -> u8 {
                 Ok(p) => p,
                 Err(e) => return report("config", &e, exit::CONFIG),
             };
-            let flags = CliTargetFlags {
-                identity_set: cli.identity.is_some(),
-                forward_agent_set: cli.forward_agent,
-                transport_set: cli.transport.is_some(),
-                runtime_set: cli.runtime.is_some(),
-            };
-            if let Err(e) = target::validate_flags(&parsed, &flags) {
+            if let Err(e) = target::validate_flags(&parsed, &target_flags(cli)) {
                 return report("config", &e, exit::CONFIG);
             }
             match resolve_target(cfg, cli, parsed) {
@@ -687,6 +693,30 @@ fn resolve_target(
                 connect_timeout_s: eff.connect_timeout_s,
             };
             Ok((eff, ResolvedTarget::Container(ct)))
+        }
+        ParsedTarget::Kube {
+            namespace,
+            pod,
+            container,
+        } => {
+            // The config key of a pod is its address without `k8s:` (C-K8S5).
+            let mut label = namespace
+                .as_ref()
+                .map_or(pod.clone(), |ns| format!("{ns}/{pod}"));
+            if let Some(c) = &container {
+                label = format!("{label}:{c}");
+            }
+            let eff = cfg.resolve(&label, &cli_overrides(cli));
+            // `user` (config or `-l`) has no meaning for `kubectl exec` (C-K8S4).
+            let kt = KubeTarget {
+                pod,
+                namespace,
+                container,
+                context: cli.kube_context.clone(),
+                label,
+                connect_timeout_s: eff.connect_timeout_s,
+            };
+            Ok((eff, ResolvedTarget::Kube(kt)))
         }
     }
 }

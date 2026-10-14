@@ -20,6 +20,12 @@ pub enum ParsedTarget {
         scheme: RuntimeScheme,
         reference: String,
     },
+    /// Kubernetes pod: `k8s:[namespace/]pod[:container]` (016 C-K8S1).
+    Kube {
+        namespace: Option<String>,
+        pod: String,
+        container: Option<String>,
+    },
 }
 
 /// How the container-target scheme constrains the runtime.
@@ -39,7 +45,7 @@ pub enum RuntimeScheme {
 pub enum TargetError {
     #[error(
         "unknown target scheme `{scheme}:` — supported: `docker:`, `podman:`, \
-         `container:`, `ssh:` (or a bare `[user@]host` for SSH)"
+         `container:`, `k8s:`, `ssh:` (or a bare `[user@]host` for SSH)"
     )]
     UnknownScheme { scheme: String },
     #[error("empty container reference after `{scheme}:`")]
@@ -58,6 +64,15 @@ pub enum TargetError {
     SshOnlyFlag { flag: &'static str },
     #[error("`--runtime` selects a container runtime and does not apply to SSH targets")]
     RuntimeFlagOnSsh,
+    #[error(
+        "malformed Kubernetes target `k8s:{raw}` — expected \
+         `k8s:[namespace/]pod[:container]` with no empty part"
+    )]
+    MalformedKube { raw: String },
+    #[error("`{flag}` does not apply to Kubernetes (`k8s:`) targets")]
+    NotForKube { flag: &'static str },
+    #[error("`--kube-context` applies to Kubernetes (`k8s:`) targets only")]
+    KubeContextOffKube,
 }
 
 /// Parse a positional target string into its family and reference (pure grammar).
@@ -78,6 +93,7 @@ pub fn parse(raw: &str) -> Result<ParsedTarget, TargetError> {
                 "docker" => container(RuntimeScheme::Docker, "docker", rest),
                 "podman" => container(RuntimeScheme::Podman, "podman", rest),
                 "container" => container(RuntimeScheme::Auto, "container", rest),
+                "k8s" => kube(rest),
                 other => Err(TargetError::UnknownScheme {
                     scheme: other.to_string(),
                 }),
@@ -103,6 +119,36 @@ fn container(
     Ok(ParsedTarget::Container {
         scheme,
         reference: reference.to_string(),
+    })
+}
+
+/// `[namespace/]pod[:container]` (016 C-K8S1). Kubernetes names are DNS labels
+/// without `/` or `:`, so both separators are unambiguous; every part present
+/// must be non-empty.
+fn kube(rest: &str) -> Result<ParsedTarget, TargetError> {
+    let malformed = || TargetError::MalformedKube {
+        raw: rest.to_string(),
+    };
+    let (path, container) = match rest.split_once(':') {
+        Some((p, c)) => (p, Some(c)),
+        None => (rest, None),
+    };
+    let (namespace, pod) = match path.split_once('/') {
+        Some((ns, pod)) => (Some(ns), pod),
+        None => (None, path),
+    };
+    let parts = [Some(pod), namespace, container];
+    if parts
+        .iter()
+        .flatten()
+        .any(|p| p.is_empty() || p.contains(['/', ':']))
+    {
+        return Err(malformed());
+    }
+    Ok(ParsedTarget::Kube {
+        namespace: namespace.map(str::to_string),
+        pod: pod.to_string(),
+        container: container.map(str::to_string),
     })
 }
 
@@ -166,11 +212,20 @@ pub struct CliTargetFlags {
     pub forward_agent_set: bool,
     pub transport_set: bool,
     pub runtime_set: bool,
+    /// `-l/--user`: `kubectl exec` cannot switch users (016 C-K8S4).
+    pub user_set: bool,
+    /// `--kube-context`: Kubernetes targets only (016 C-K8S3).
+    pub kube_context_set: bool,
 }
 
-/// Reject flags that do not apply to the target's family before connecting (C-A5):
-/// `-i/--identity` and `--transport` are SSH-only; `--runtime` is container-only.
+/// Reject flags that do not apply to the target's family before connecting (C-A5,
+/// 016 C-K8S3/C-K8S4): `-i/--identity`, `-A` and `--transport` are SSH-only;
+/// `--runtime` is container-only; `-l/--user` has no Kubernetes meaning;
+/// `--kube-context` is Kubernetes-only.
 pub fn validate_flags(target: &ParsedTarget, flags: &CliTargetFlags) -> Result<(), TargetError> {
+    if flags.kube_context_set && !matches!(target, ParsedTarget::Kube { .. }) {
+        return Err(TargetError::KubeContextOffKube);
+    }
     match target {
         ParsedTarget::Ssh { .. } => {
             if flags.runtime_set {
@@ -190,6 +245,18 @@ pub fn validate_flags(target: &ParsedTarget, flags: &CliTargetFlags) -> Result<(
                 return Err(TargetError::SshOnlyFlag {
                     flag: "--transport",
                 });
+            }
+        }
+        ParsedTarget::Kube { .. } => {
+            let rejected = [
+                (flags.identity_set, "--identity"),
+                (flags.forward_agent_set, "--forward-agent"),
+                (flags.transport_set, "--transport"),
+                (flags.runtime_set, "--runtime"),
+                (flags.user_set, "--user"),
+            ];
+            if let Some((_, flag)) = rejected.into_iter().find(|(set, _)| *set) {
+                return Err(TargetError::NotForKube { flag });
             }
         }
     }
@@ -252,12 +319,82 @@ mod tests {
         );
     }
 
+    /// `k8s:[namespace/]pod[:container]` and its malformed shapes (016 C-K8S1).
+    #[test]
+    fn parses_kube_targets() {
+        let kube = |ns: Option<&str>, pod: &str, c: Option<&str>| ParsedTarget::Kube {
+            namespace: ns.map(str::to_string),
+            pod: pod.into(),
+            container: c.map(str::to_string),
+        };
+        assert_eq!(parse("k8s:web-0").unwrap(), kube(None, "web-0", None));
+        assert_eq!(
+            parse("k8s:pay/api-0").unwrap(),
+            kube(Some("pay"), "api-0", None)
+        );
+        assert_eq!(
+            parse("k8s:api-0:app").unwrap(),
+            kube(None, "api-0", Some("app"))
+        );
+        assert_eq!(
+            parse("k8s:pay/api-0:app").unwrap(),
+            kube(Some("pay"), "api-0", Some("app"))
+        );
+        for bad in [
+            "k8s:",
+            "k8s:/pod",
+            "k8s:ns/",
+            "k8s:pod:",
+            "k8s:a/b/c",
+            "k8s:p:c:d",
+            "k8s::c",
+        ] {
+            assert!(
+                matches!(parse(bad), Err(TargetError::MalformedKube { .. })),
+                "{bad} must be rejected, got {:?}",
+                parse(bad)
+            );
+        }
+    }
+
+    /// Flags of other families are refused for pods and vice versa (C-K8S3/C-K8S4).
+    #[test]
+    fn kube_flag_split_is_enforced() {
+        let pod = parse("k8s:web").unwrap();
+        let ssh = ParsedTarget::Ssh { host: "h".into() };
+        let only = |f: fn(&mut CliTargetFlags)| {
+            let mut flags = CliTargetFlags::default();
+            f(&mut flags);
+            flags
+        };
+        for (flags, flag) in [
+            (only(|f| f.identity_set = true), "--identity"),
+            (only(|f| f.forward_agent_set = true), "--forward-agent"),
+            (only(|f| f.transport_set = true), "--transport"),
+            (only(|f| f.runtime_set = true), "--runtime"),
+            (only(|f| f.user_set = true), "--user"),
+        ] {
+            assert_eq!(
+                validate_flags(&pod, &flags),
+                Err(TargetError::NotForKube { flag })
+            );
+        }
+        let ctx = only(|f| f.kube_context_set = true);
+        assert!(validate_flags(&pod, &ctx).is_ok());
+        assert_eq!(
+            validate_flags(&ssh, &ctx),
+            Err(TargetError::KubeContextOffKube)
+        );
+        // `-l` stays valid for SSH and containers.
+        assert!(validate_flags(&ssh, &only(|f| f.user_set = true)).is_ok());
+    }
+
     #[test]
     fn rejects_bad_schemes_and_empty_refs() {
         assert_eq!(
-            parse("k8s:pod"),
+            parse("lxc:box"),
             Err(TargetError::UnknownScheme {
-                scheme: "k8s".into()
+                scheme: "lxc".into()
             })
         );
         assert_eq!(
