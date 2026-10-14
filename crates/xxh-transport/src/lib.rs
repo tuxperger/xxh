@@ -3,12 +3,16 @@
 //! The rest of the tool works only through [`Transport`] and never learns which
 //! backend — or transport *family* — is in use. Two families implement it:
 //! SSH ([`RusshTransport`], [`SshCliTransport`]) and container runtimes
-//! ([`ContainerCliTransport`] over docker/podman exec).
-//! See contracts/transport-trait.md and 002-container-targets/contracts/.
+//! ([`ContainerCliTransport`] over docker/podman exec) and Kubernetes pods
+//! ([`KubectlTransport`] over `kubectl exec`, 016).
+//! See contracts/transport-trait.md, 002-container-targets/contracts/ and
+//! 016-additional-transports/contracts/.
 
 use std::collections::BTreeMap;
 
 mod container_backend;
+mod kube_backend;
+mod pty;
 mod russh_backend;
 mod ssh_cli_backend;
 pub mod ssh_config_extra;
@@ -16,6 +20,7 @@ mod tty;
 pub use container_backend::{
     ContainerCliTransport, resolve_runtime, running_containers, running_containers_auto,
 };
+pub use kube_backend::{KubectlTransport, resolve_pod_container};
 pub use russh_backend::RusshTransport;
 pub use ssh_cli_backend::SshCliTransport;
 
@@ -143,14 +148,51 @@ impl ContainerTarget {
     }
 }
 
-/// The one target type [`Transport::connect`] accepts: either transport family,
-/// distinguishable but uniform (Принцип III). A backend given a target of the
-/// other family answers [`TransportError::BackendUnavailable`] immediately —
-/// no silent fallback (C-T6).
+/// A running pod of a Kubernetes cluster as a session target (016 data-model,
+/// contracts/k8s-target.md). Access comes from the user's kubeconfig only.
+#[derive(Debug, Clone)]
+pub struct KubeTarget {
+    pub pod: String,
+    /// `None` — the namespace of the kubeconfig context.
+    pub namespace: Option<String>,
+    /// `None` — the pod's default container (C-K8S8).
+    pub container: Option<String>,
+    /// kubeconfig context (`--kube-context`); `None` — the current one.
+    pub context: Option<String>,
+    /// The address as the user wrote it, without `k8s:` (`ns/pod:c`).
+    pub label: String,
+    pub connect_timeout_s: u64,
+}
+
+impl KubeTarget {
+    pub fn new(pod: impl Into<String>) -> Self {
+        let pod = pod.into();
+        Self {
+            label: pod.clone(),
+            pod,
+            namespace: None,
+            container: None,
+            context: None,
+            connect_timeout_s: 10,
+        }
+    }
+}
+
+/// The one target type [`Transport::connect`] accepts: any transport family,
+/// distinguishable but uniform (Принцип III). A backend given a target of
+/// another family answers [`TransportError::BackendUnavailable`] immediately —
+/// no silent fallback (C-T6, 016 C-K8S13).
 #[derive(Debug, Clone)]
 pub enum ResolvedTarget {
     Ssh(ResolvedSshTarget),
     Container(ContainerTarget),
+    Kube(KubeTarget),
+}
+
+impl From<KubeTarget> for ResolvedTarget {
+    fn from(t: KubeTarget) -> Self {
+        ResolvedTarget::Kube(t)
+    }
 }
 
 impl From<ResolvedSshTarget> for ResolvedTarget {
@@ -172,14 +214,16 @@ impl ResolvedTarget {
         match self {
             ResolvedTarget::Ssh(t) => &t.alias,
             ResolvedTarget::Container(t) => &t.reference,
+            ResolvedTarget::Kube(t) => &t.label,
         }
     }
 
-    /// The connect timeout for either family (§FR-031).
+    /// The connect timeout for any family (§FR-031).
     pub fn connect_timeout_s(&self) -> u64 {
         match self {
             ResolvedTarget::Ssh(t) => t.connect_timeout_s,
             ResolvedTarget::Container(t) => t.connect_timeout_s,
+            ResolvedTarget::Kube(t) => t.connect_timeout_s,
         }
     }
 }
@@ -357,6 +401,26 @@ mod tests {
         assert!(
             matches!(err, Err(TransportError::BackendUnavailable(_))),
             "container backend must reject an SSH target with BackendUnavailable, got {err:?}"
+        );
+    }
+
+    /// A pod target reaches only the kubectl backend (016 T002, C-K8S13).
+    #[tokio::test]
+    async fn ssh_and_container_backends_reject_kube_target() {
+        let kube = ResolvedTarget::Kube(KubeTarget::new("web"));
+        let err = RusshTransport::new()
+            .connect(&kube, &AuthPolicy::default())
+            .await;
+        assert!(
+            matches!(err, Err(TransportError::BackendUnavailable(_))),
+            "got {err:?}"
+        );
+        let err = ContainerCliTransport::new()
+            .connect(&kube, &AuthPolicy::default())
+            .await;
+        assert!(
+            matches!(err, Err(TransportError::BackendUnavailable(_))),
+            "got {err:?}"
         );
     }
 
