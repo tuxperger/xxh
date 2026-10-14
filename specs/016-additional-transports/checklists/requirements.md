@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Дополнительные транспорты — Kubernetes, другие рантаймы, локальная цель
+# Specification Quality Checklist: Транспорт Kubernetes — свой шелл в поде
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-10-01
