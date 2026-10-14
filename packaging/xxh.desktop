@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=xxh
+Comment=Portable shell environment over SSH
+Exec=xxh
+Icon=xxh
+Terminal=true
+NoDisplay=true
+Categories=System;Network;
