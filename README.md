@@ -482,7 +482,10 @@ $ xxh sync                       # nothing to do: everything matches the lock
 `xxh.lock` records each source's git commit and content hash; commit it with your
 config and `xxh sync` on another machine reproduces the same plugins — content
 that does not match the lock is refused. `xxh plugin update <name>` moves a plugin
-and its lock entry and says from which version and commit to which. A plugin may
+and its lock entry and says from which version and commit to which. Without a
+lock entry, whatever is already installed from the declared source is locked as
+it is — nothing is fetched or rebuilt — so dropping `xxh.lock` (or `lockFile` in
+the Nix modules) never triggers a reinstall. A plugin may
 declare per-platform builds (`[builds.<os-arch>] url + sha256`, like shell
 packages) so a binary payload never has to live in git.
 
