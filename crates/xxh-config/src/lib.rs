@@ -317,7 +317,7 @@ pub struct Effective {
 impl Config {
     /// Default canonical config path (`$XDG_CONFIG_HOME/xxh/config.toml`).
     pub fn default_path() -> Option<PathBuf> {
-        directories::BaseDirs::new().map(|d| d.config_dir().join("xxh").join("config.toml"))
+        config_home(std::env::var_os("XDG_CONFIG_HOME")).map(|d| d.join("xxh").join("config.toml"))
     }
 
     /// System-wide config location, written by the NixOS module (§FR-044).
@@ -461,6 +461,16 @@ impl Config {
     }
 }
 
+/// The client's config home: an absolute `XDG_CONFIG_HOME` wins on every
+/// platform, otherwise the platform default. `directories` ignores the variable
+/// on macOS (`~/Library/Application Support`), which broke the documented path.
+fn config_home(xdg: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    match xdg.map(PathBuf::from) {
+        Some(p) if p.is_absolute() => Some(p),
+        _ => directories::BaseDirs::new().map(|d| d.config_dir().to_path_buf()),
+    }
+}
+
 /// Expand a leading `~/` to the user's home directory: config-file values are
 /// not shell-expanded, and both transports need a real path (ssh `-i` parity).
 fn expand_tilde(p: PathBuf) -> PathBuf {
@@ -475,6 +485,20 @@ fn expand_tilde(p: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An absolute XDG_CONFIG_HOME is honoured on every platform (macOS too);
+    /// an empty or relative one falls back to the platform default.
+    #[test]
+    fn config_home_honours_absolute_xdg() {
+        assert_eq!(
+            config_home(Some("/x/cfg".into())),
+            Some(PathBuf::from("/x/cfg"))
+        );
+        let fallback = directories::BaseDirs::new().map(|d| d.config_dir().to_path_buf());
+        assert_eq!(config_home(Some("".into())), fallback);
+        assert_eq!(config_home(Some("rel".into())), fallback);
+        assert_eq!(config_home(None), fallback);
+    }
 
     /// 013 C-L1: declarations parse, round-trip, and are omitted when empty.
     /// 010 C-F1/C-F3: both forms parse; a host's entries merge over the global
