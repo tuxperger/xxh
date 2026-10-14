@@ -31,6 +31,8 @@ $ # ~/.xxh on the host is gone
   a container with `docker:<ref>`, `podman:<ref>` or `container:<ref>` and xxh
   drives the runtime's `exec` as the transport (same bootstrap, same cache, same
   guaranteed cleanup — the image and its layers are never modified).
+- And inside **Kubernetes pods**: `k8s:[namespace/]pod[:container]` goes through
+  `kubectl exec` with your kubeconfig — no sshd in the pod, no change to its spec.
 - Cleanup is guaranteed: a remote `trap` removes everything on exit (normal or not),
   and a reconcile sweep on the next connect clears leftovers from crashed sessions.
 - A component's address is the hash of its content — file names, permission bits
@@ -70,6 +72,11 @@ xxh [user@]<host> [-l user] [-i ~/.ssh/key] [-A] [-e NAME[=VALUE]]... [--shell z
 xxh docker:app1                 # a running docker container by name or id
 xxh podman:6f0a12               # a running podman container
 xxh container:app1 [--runtime docker|podman]   # runtime from flag/config, else auto (docker → podman)
+
+# Kubernetes pod (kubectl exec; your kubeconfig decides access)
+xxh k8s:web-0                   # pod in the current context's namespace
+xxh k8s:payments/api-0:app      # namespace, pod and container
+xxh --kube-context staging k8s:payments/api-0
 
 # One command instead of a session (same environment, same cleanup)
 xxh <target> -- <command> [args…]   # exact arguments, no shell re-interpretation
@@ -126,6 +133,34 @@ xxh: ▸ connect app1
 xxh: ▸ detect platform
 xxh: ▸ shell zsh
 app1 ~ ❯ …                   # your shell, inside their container; the image is untouched
+```
+
+### Kubernetes pods
+
+`k8s:[namespace/]pod[:container]` addresses a running pod; xxh drives
+`kubectl exec` as the transport, so access, auth plugins and the cluster come from
+your kubeconfig (`KUBECONFIG`, the current context, or `--kube-context NAME`).
+Without a namespace the context's namespace is used; without a container, the
+pod's `kubectl.kubernetes.io/default-container`, else its first container — the
+choice is shown as `container <name>`. Delivery, cache, `--keep`, `xxh status`,
+`xxh clean`, `xxh doctor`, `-e`, plugins and one-command runs behave as for a
+docker container; the pod object is never written to (`exec` only — no `cp`,
+`debug` or patches).
+
+`kubectl exec` cannot switch users, so `-l/--user` is rejected for pods, as are
+the SSH-only options and `--runtime`; `--kube-context` is rejected for anything
+but a pod. Errors say what is wrong — kubectl missing, cluster unreachable, no
+access, no such pod, pod not running, no such container (with the pod's
+containers listed) — without echoing kubectl's output, which may name the API
+server. Pod names are not completed: that would need the cluster API, and
+completion never goes to the network.
+
+```console
+$ xxh -v k8s:payments/api-0
+xxh: ▸ container app
+xxh: ▸ connect payments/api-0
+xxh: ▸ detect platform
+xxh: ▸ shell zsh
 ```
 
 Configuration lives in `~/.config/xxh/config.toml` (system-wide fallback:

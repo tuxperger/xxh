@@ -141,6 +141,10 @@
             rustToolchain
             openssh
             docker-client
+            # Kubernetes targets (016): the client and a throwaway kind cluster
+            # for the k8s_smoke scenario.
+            kubectl
+            kind
             # The completion stubs are tested in the real shells (007); bash must
             # be the readline build to have `complete`.
             bashInteractive

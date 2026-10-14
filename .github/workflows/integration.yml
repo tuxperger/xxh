@@ -94,3 +94,37 @@ jobs:
         run: |
           docker ps -aq --filter "name=xxh-" | xargs -r docker rm -f
           docker images -q "xxh-test-*" | xargs -r docker rmi -f || true
+
+  # Kubernetes pod targets (016 T011): the k8s scenario against a kind cluster.
+  # The alpine image is the musl/BusyBox cell; debian is the glibc one.
+  kubernetes:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [alpine, debian]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      XXH_TEST_IMAGE: ${{ matrix.image }}
+      XXH_TEST_KUBE_CONTEXT: kind-xxh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: xxh
+
+      - name: Run Kubernetes scenario
+        run: cargo test -p xxh-cli --test k8s_smoke -- --test-threads=1
+
+      # The fixture deletes its namespace on Drop; this catches panics before it.
+      - name: Teardown leaked namespaces
+        if: always()
+        run: |
+          kubectl get ns -o name | grep '^namespace/xxh-it-' | xargs -r kubectl delete --wait=false
