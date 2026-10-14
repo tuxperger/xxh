@@ -7,6 +7,8 @@
 //! - a new commit upstream is not picked up while the lock pins the old one;
 //! - `xxh plugin update` moves the plugin and its lock entry and says so;
 //!   putting the old lock back and syncing restores the old revision (US2);
+//! - without a lock and with the git source gone, sync locks what is installed
+//!   (024 C-A1);
 //! - a lock hash that does not match is refused with exit 30 (§FR-004);
 //! - the container ends clean, its image unchanged.
 //!
@@ -192,6 +194,17 @@ fn declared_plugins_sync_and_pin() {
     assert_eq!(code, Some(0));
     assert!(out.contains("plugin gp: updated"), "{out}");
     assert_eq!(in_container("echo \"$GP\""), "v1\n");
+
+    // No lock and the git source out of reach: what is installed is locked as
+    // it is, nothing fetched (024 C-A1).
+    std::fs::remove_file(&lock).unwrap();
+    let moved = scratch.join("gp-away");
+    std::fs::rename(&repo, &moved).unwrap();
+    let (code, out, err) = xxh(&["sync"]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert_eq!(out.matches("unchanged").count(), 3, "{out}");
+    assert_eq!(std::fs::read_to_string(&lock).unwrap(), old_lock);
+    std::fs::rename(&moved, &repo).unwrap();
 
     // A clean registry, the local plugin changed since it was locked: the lock
     // refuses it (exit 30), everything else comes back as locked (§FR-004).

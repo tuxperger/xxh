@@ -4,7 +4,7 @@
 //! by tests):
 //!
 //! ```text
-//! index.toml            # name -> { source spec, content hash, version }
+//! index.toml            # name -> { source spec, content hash, version, revision }
 //! packages/<blake3>/    # immutable package trees (plugin.toml at the root)
 //! ```
 //!
@@ -25,6 +25,11 @@ pub struct IndexEntry {
     pub source: SourceSpec,
     pub hash: String,
     pub version: String,
+    /// The source revision installed (a git commit), so `xxh sync` can put an
+    /// installed plugin into the lock without fetching it again (024 C-A5).
+    /// Absent for sources without one and for entries written before 024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -187,6 +192,7 @@ impl Registry {
                 source: spec.clone(),
                 hash: hash.clone(),
                 version: fetched.manifest.version.to_string(),
+                revision: fetched.revision.clone(),
             },
         );
         self.save_index(&index)?;
@@ -465,6 +471,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reg.entry("pinned").unwrap().source, pinned);
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn revision_is_kept_and_old_entries_still_read() {
+        let (reg, root) = tmp_registry();
+        let src = plugin_dir("rev", "1.0.0");
+        let spec = SourceSpec::Git {
+            url: "file:///r".into(),
+            reference: None,
+        };
+        let mut f = fetched(&src, None);
+        f.revision = Some("abc123".into());
+        store_now(&reg, &spec, &f).unwrap();
+        assert_eq!(
+            reg.entry("rev").unwrap().revision.as_deref(),
+            Some("abc123")
+        );
+
+        // An index written before 024 has no `revision`.
+        std::fs::write(
+            root.join("index.toml"),
+            "[plugins.old]\nhash = \"h\"\nversion = \"0.1.0\"\n\
+             [plugins.old.source]\ntype = \"nix\"\nattr = \"htop\"\n",
+        )
+        .unwrap();
+        assert_eq!(reg.entry("old").unwrap().revision, None);
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&root);
     }
